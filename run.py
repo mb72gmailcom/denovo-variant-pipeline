@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import List
+
+# Allow running this script without installing the package.
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from make_vcf_pipeline.stage1 import run_stage1
 from make_vcf_pipeline.stage2 import parse_class_suffix_pairs, run_stage2
