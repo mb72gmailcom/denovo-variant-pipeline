@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "make-vcf-pipeline"
+version = "0.1.0"
+description = "Three-stage patient VCF processing pipeline (stage 1 and 2 implemented)"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Project User" }]
+dependencies = []
+
+[project.scripts]
+make-vcf = "make_vcf_pipeline.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
