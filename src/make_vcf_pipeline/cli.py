@@ -7,7 +7,7 @@ from typing import List
 
 from .stage1 import run_stage1
 from .stage2 import load_stage1_class_map, parse_class_suffix_pairs, run_stage2
-from .stage3 import parse_class_cap_pairs, run_stage3
+from .stage3 import parse_class_cap_pairs, parse_classes_to_process, resolve_stage3_output, run_stage3
 
 
 def _split_csv(value: str) -> List[str]:
@@ -19,7 +19,7 @@ def _split_csv(value: str) -> List[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="make-vcf",
-        description="Pipeline runner for stage1/stage2 (stage3 placeholder).",
+        description="Pipeline runner for stage1, stage2, and stage3.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -66,7 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p3 = subparsers.add_parser("stage3", help="Post-process stage2 outputs into chromosome files")
     p3.add_argument("--stage2-dir", type=Path, required=True)
-    p3.add_argument("--output-dir", type=Path, required=True)
+    p3.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Pipeline output root; stage3 writes under <output-dir>/stage3 or <output-dir>/stage3_<classes>.",
+    )
     p3.add_argument("--class-map-json", type=Path, required=True)
     p3.add_argument(
         "--denovo-cap",
@@ -80,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Per-class denovo cap override. Repeat format class=cap.",
     )
+    p3.add_argument(
+        "--classes-to-process",
+        action="append",
+        default=[],
+        help="Optional: only these classes (comma-separated or repeat). Omit for all classes.",
+    )
 
     p123 = subparsers.add_parser("run123", help="Run stage1, stage2, then stage3")
     p123.add_argument("--input-dir", type=Path, required=True)
@@ -90,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     p123.add_argument("--batch-size", type=int, default=1000)
     p123.add_argument("--denovo-cap", type=int, default=None)
     p123.add_argument("--class-cap", action="append", default=[])
+    p123.add_argument(
+        "--classes-to-process",
+        action="append",
+        default=[],
+        help="Optional stage3: only these classes (comma-separated or repeat). Omit for all.",
+    )
     return parser
 
 
@@ -136,10 +153,12 @@ def main() -> None:
     if args.command == "stage3":
         class_map = load_stage1_class_map(args.class_map_json)
         class_to_cap = parse_class_cap_pairs(args.class_cap)
+        requested = parse_classes_to_process(args.classes_to_process)
+        class_map_run, stage3_dir = resolve_stage3_output(args.output_dir, class_map, requested)
         result = run_stage3(
             stage2_dir=args.stage2_dir,
-            output_dir=args.output_dir,
-            class_map=class_map,
+            output_dir=stage3_dir,
+            class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
         )
@@ -151,7 +170,6 @@ def main() -> None:
         stage1_result = run_stage1(args.input_dir, args.output_dir, prefixes)
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         stage2_dir = args.output_dir / "stage2"
-        stage3_dir = args.output_dir / "stage3"
 
         stage2_outputs = run_stage2(
             input_dir=args.input_dir,
@@ -162,10 +180,14 @@ def main() -> None:
             batch_size=args.batch_size,
         )
         class_to_cap = parse_class_cap_pairs(args.class_cap)
+        requested = parse_classes_to_process(args.classes_to_process)
+        class_map_run, stage3_dir = resolve_stage3_output(
+            args.output_dir, stage1_result.classes_to_patients, requested
+        )
         stage3_result = run_stage3(
             stage2_dir=stage2_dir,
             output_dir=stage3_dir,
-            class_map=stage1_result.classes_to_patients,
+            class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
         )

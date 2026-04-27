@@ -13,6 +13,51 @@ VarsMap = Dict[str, List[str]]
 FilterFn = Callable[[VarsMap, int], VarsMap]
 
 
+def parse_classes_to_process(entries: List[str]) -> List[str]:
+    """Flatten repeatable/comma-separated class names; preserve first-seen order, dedupe."""
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in entries:
+        for chunk in raw.split(","):
+            name = chunk.strip()
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
+def resolve_stage3_output(
+    output_root: Path,
+    class_map: Dict[str, List[str]],
+    classes_to_process: List[str],
+) -> tuple[Dict[str, List[str]], Path]:
+    """
+    Choose which classes to include and the output directory under output_root.
+
+    - If classes_to_process is empty: all keys from class_map; dir ``output_root/stage3``.
+    - If classes_to_process equals the full key set: dir ``output_root/stage3``.
+    - Otherwise: dir ``output_root/stage3_<class>_...`` (sorted class names for stability).
+    """
+    if not classes_to_process:
+        return dict(class_map), output_root / "stage3"
+
+    missing = [c for c in classes_to_process if c not in class_map]
+    if missing:
+        raise ValueError(
+            f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
+        )
+
+    filtered = {k: class_map[k] for k in classes_to_process}
+    full_keys = set(class_map.keys())
+    selected_keys = set(classes_to_process)
+
+    if selected_keys == full_keys:
+        return filtered, output_root / "stage3"
+
+    tag = "_".join(sorted(selected_keys))
+    return filtered, output_root / f"stage3_{tag}"
+
+
 def parse_class_cap_pairs(pairs: List[str]) -> Dict[str, int]:
     mapping: Dict[str, int] = {}
     for raw in pairs:
@@ -167,6 +212,7 @@ def run_stage3(
         json.dumps(
             {
                 "classes_processed": classes_processed,
+                "classes_included": sorted(class_map.keys()),
                 "variants_kept": len(dvars_all),
                 "chromosome_counts": {chrom: len(keys) for chrom, keys in dchr_sorted.items()},
             },

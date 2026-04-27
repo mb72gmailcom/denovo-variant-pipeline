@@ -72,16 +72,31 @@ Batch outputs:
 
 ## Stage 3
 
-Use class map from stage 1 and stage 2 batch outputs:
+Use class map from stage 1 and stage 2 batch outputs.  
+`--output-dir` is the **pipeline root**; results go under `stage3/` or `stage3_<classes>/`:
+
+- All classes (or flag lists every class): `<output-dir>/stage3/`
+- Subset only: `<output-dir>/stage3_SSC_SP/` (sorted class names joined by `_`)
 
 ```bash
 make-vcf stage3 \
   --stage2-dir /data/out/stage2 \
-  --output-dir /data/out/stage3 \
+  --output-dir /data/out \
   --class-map-json /data/out/stage1_patient_ids_by_class.json \
   --denovo-cap 100 \
   --class-cap SSC=80 \
   --class-cap ABC=120
+```
+
+Process only some classes (writes e.g. `/data/out/stage3_SSC_ABC/`):
+
+```bash
+make-vcf stage3 \
+  --stage2-dir /data/out/stage2 \
+  --output-dir /data/out \
+  --class-map-json /data/out/stage1_patient_ids_by_class.json \
+  --denovo-cap 100 \
+  --classes-to-process SSC,ABC
 ```
 
 You can also provide caps as one comma-separated list:
@@ -90,9 +105,9 @@ You can also provide caps as one comma-separated list:
 --class-cap SSC=80,ABC=120
 ```
 
-Outputs:
-- `<output_dir>/chr1/variants_snv_nohead.vcf` (and `chr2` ... `chr22`, `chrX`)
-- `<output_dir>/stage3_summary.json`
+Outputs (under the chosen stage3 directory):
+- `chr1/variants_snv_nohead.vcf` (and `chr2` ... `chr22`, `chrX`)
+- `stage3_summary.json`
 
 ## Run all stages
 
@@ -106,6 +121,12 @@ make-vcf run123 \
   --batch-size 1000 \
   --denovo-cap 100 \
   --class-cap SSC=80
+```
+
+Optional: restrict stage 3 to a subset of classes (writes `/data/out/stage3_SSC_ABC/`). Add to the `run123` command:
+
+```bash
+--classes-to-process SSC,ABC
 ```
 
 ## `run.py` helper
@@ -124,7 +145,8 @@ python run.py \
   --class-suffix ABC=vcf \
   --batch-size 1000 \
   --denovo-cap 100 \
-  --class-cap SSC=80
+  --class-cap SSC=80 \
+  --classes-to-process SSC,ABC
 ```
 
 Run only selected stages by providing only the needed flags:

@@ -14,7 +14,12 @@ if str(SRC_DIR) not in sys.path:
 
 from make_vcf_pipeline.stage1 import run_stage1
 from make_vcf_pipeline.stage2 import parse_class_suffix_pairs, run_stage2
-from make_vcf_pipeline.stage3 import parse_class_cap_pairs, run_stage3
+from make_vcf_pipeline.stage3 import (
+    parse_class_cap_pairs,
+    parse_classes_to_process,
+    resolve_stage3_output,
+    run_stage3,
+)
 
 
 def _split_csv(value: str) -> List[str]:
@@ -73,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Stage3: per-class denovo cap override, repeat as class=cap.",
     )
+    parser.add_argument(
+        "--classes-to-process",
+        action="append",
+        default=[],
+        help="Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
+    )
     return parser
 
 
@@ -86,7 +97,6 @@ def main() -> None:
     stage1_out_dir = args.output_dir
     stage1_json_path = stage1_out_dir / "stage1_patient_ids_by_class.json"
     stage2_out_dir = args.output_dir / "stage2"
-    stage3_out_dir = args.output_dir / "stage3"
 
     class_map = None
 
@@ -126,10 +136,12 @@ def main() -> None:
             class_map = json.loads(stage1_json_path.read_text(encoding="utf-8"))
 
         class_to_cap = parse_class_cap_pairs(args.class_cap)
+        requested = parse_classes_to_process(args.classes_to_process)
+        class_map_run, stage3_out_dir = resolve_stage3_output(args.output_dir, class_map, requested)
         stage3_result = run_stage3(
             stage2_dir=stage2_out_dir,
             output_dir=stage3_out_dir,
-            class_map=class_map,
+            class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
         )
