@@ -162,9 +162,15 @@ def run_stage2(
         if not suffix:
             raise ValueError(f"No suffix provided for class '{class_name}'")
 
+        class_dir = output_dir / f"class_{class_name}"
+        class_dir.mkdir(parents=True, exist_ok=True)
+
+        patients_nonempty_dvars_inh: set[str] = set()
+
         for batch_index, batch_patient_ids in enumerate(chunked(patient_ids, batch_size), start=1):
             dVars: Dict[str, List[str]] = {}
             dVars_inh: Dict[str, List[str]] = {}
+            batch_patients_nonempty_inh: set[str] = set()
 
             for patient_id in batch_patient_ids:
                 file_path = build_file_path(input_dir, patient_id, suffix)
@@ -173,9 +179,9 @@ def run_stage2(
                 dvars, dvars_inh = get_vars(file_path, patient_id)
                 merge(dVars, dvars)
                 merge(dVars_inh, dvars_inh)
-
-            class_dir = output_dir / f"class_{class_name}"
-            class_dir.mkdir(parents=True, exist_ok=True)
+                if dvars_inh:
+                    batch_patients_nonempty_inh.add(patient_id)
+                    patients_nonempty_dvars_inh.add(patient_id)
 
             dvars_path = class_dir / f"batch_{batch_index:05d}_dVars.pkl"
             dvars_inh_path = class_dir / f"batch_{batch_index:05d}_dVars_inh.pkl"
@@ -184,6 +190,12 @@ def run_stage2(
                 pickle.dump(dVars, f)
             with dvars_inh_path.open("wb") as f:
                 pickle.dump(dVars_inh, f)
+
+            inh_list_path = class_dir / f"batch_{batch_index:05d}_patients_nonempty_dvars_inh.txt"
+            inh_list_path.write_text(
+                "\n".join(sorted(batch_patients_nonempty_inh)) + ("\n" if batch_patients_nonempty_inh else ""),
+                encoding="utf-8",
+            )
 
             outputs.append(
                 BatchOutput(
@@ -194,4 +206,12 @@ def run_stage2(
                     dvars_inh_path=dvars_inh_path,
                 )
             )
+
+        class_inh_list_path = class_dir / "patients_nonempty_dvars_inh.txt"
+        class_inh_list_path.write_text(
+            "\n".join(sorted(patients_nonempty_dvars_inh))
+            + ("\n" if patients_nonempty_dvars_inh else ""),
+            encoding="utf-8",
+        )
+
     return outputs

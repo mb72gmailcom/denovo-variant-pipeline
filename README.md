@@ -69,6 +69,8 @@ Expected file pattern:
 Batch outputs:
 - `class_<name>/batch_00001_dVars.pkl`
 - `class_<name>/batch_00001_dVars_inh.pkl`
+- `class_<name>/batch_00001_patients_nonempty_dvars_inh.txt` (patient IDs with non-empty `dvars_inh` for that batch)
+- `class_<name>/patients_nonempty_dvars_inh.txt` (sorted union across all batches for that class)
 
 ## Stage 3
 
