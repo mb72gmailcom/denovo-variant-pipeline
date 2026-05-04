@@ -55,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-class suffix override. Repeat format class=suffix.",
     )
     p2.add_argument("--batch-size", type=int, default=1000)
+    p2.add_argument(
+        "--task",
+        choices=("denovo", "inherited"),
+        default="denovo",
+        help="denovo: list patients with non-empty inherited (sidecar txt only if non-empty). "
+        "inherited: list patients with non-empty denovo (sidecar txt only if non-empty). Pickles unchanged.",
+    )
 
     p12 = subparsers.add_parser("run12", help="Run stage1 then stage2")
     p12.add_argument("--input-dir", type=Path, required=True)
@@ -63,6 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     p12.add_argument("--suffix", type=str, default=None)
     p12.add_argument("--class-suffix", action="append", default=[])
     p12.add_argument("--batch-size", type=int, default=1000)
+    p12.add_argument(
+        "--task",
+        choices=("denovo", "inherited"),
+        default="denovo",
+        help="Stage2 task (same meaning as make-vcf stage2 --task).",
+    )
 
     p3 = subparsers.add_parser("stage3", help="Post-process stage2 outputs into chromosome files")
     p3.add_argument("--stage2-dir", type=Path, required=True)
@@ -70,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         required=True,
-        help="Pipeline output root; stage3 writes under <output-dir>/stage3 or <output-dir>/stage3_<classes>.",
+        help="Pipeline output root; stage3 writes under stage3/ or stage3_<classes>/ (denovo), or stage3_inherited/... (inherited).",
     )
     p3.add_argument("--class-map-json", type=Path, required=True)
     p3.add_argument(
@@ -91,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Optional: only these classes (comma-separated or repeat). Omit for all classes.",
     )
+    p3.add_argument(
+        "--task",
+        choices=("denovo", "inherited"),
+        default="denovo",
+        help="denovo: merge batch dVars. inherited: merge batch dVars_inh; output under stage3_inherited/...",
+    )
 
     p123 = subparsers.add_parser("run123", help="Run stage1, stage2, then stage3")
     p123.add_argument("--input-dir", type=Path, required=True)
@@ -106,6 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Optional stage3: only these classes (comma-separated or repeat). Omit for all.",
+    )
+    p123.add_argument(
+        "--task",
+        choices=("denovo", "inherited"),
+        default="denovo",
+        help="Applies to stage2 (sidecar lists) and stage3 (which pickle set and output dir prefix).",
     )
     return parser
 
@@ -130,6 +155,7 @@ def main() -> None:
             default_suffix=args.suffix,
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
+            task=args.task,
         )
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
         return
@@ -145,6 +171,7 @@ def main() -> None:
             default_suffix=args.suffix,
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
+            task=args.task,
         )
         print(f"Stage1 file: {stage1_result.output_json}")
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
@@ -154,13 +181,16 @@ def main() -> None:
         class_map = load_stage1_class_map(args.class_map_json)
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)
-        class_map_run, stage3_dir = resolve_stage3_output(args.output_dir, class_map, requested)
+        class_map_run, stage3_dir = resolve_stage3_output(
+            args.output_dir, class_map, requested, task=args.task
+        )
         result = run_stage3(
             stage2_dir=args.stage2_dir,
             output_dir=stage3_dir,
             class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
+            task=args.task,
         )
         print(json.dumps(result.__dict__, indent=2, default=str))
         return
@@ -178,11 +208,12 @@ def main() -> None:
             default_suffix=args.suffix,
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
+            task=args.task,
         )
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)
         class_map_run, stage3_dir = resolve_stage3_output(
-            args.output_dir, stage1_result.classes_to_patients, requested
+            args.output_dir, stage1_result.classes_to_patients, requested, task=args.task
         )
         stage3_result = run_stage3(
             stage2_dir=stage2_dir,
@@ -190,6 +221,7 @@ def main() -> None:
             class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
+            task=args.task,
         )
         print(f"Stage1 file: {stage1_result.output_json}")
         print(json.dumps([o.__dict__ for o in stage2_outputs], indent=2, default=str))

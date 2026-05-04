@@ -69,16 +69,21 @@ Expected file pattern:
 Batch outputs:
 - `class_<name>/batch_00001_dVars.pkl`
 - `class_<name>/batch_00001_dVars_inh.pkl`
-- `class_<name>/batch_00001_patients_nonempty_dvars_inh.txt` (patient IDs with non-empty `dvars_inh` for that batch)
-- `class_<name>/patients_nonempty_dvars_inh.txt` (sorted union across all batches for that class)
+
+Optional patient-ID sidecar lists (only written when that batch or class has at least one ID):
+
+- `--task denovo` (default): `batch_*_patients_nonempty_dvars_inh.txt` per batch (if non-empty), and `patients_nonempty_dvars_inh.txt` for the class (if non-empty).
+- `--task inherited`: `batch_*_patients_nonempty_dvars.txt` per batch (if non-empty), and `patients_nonempty_dvars.txt` for the class (if non-empty).
 
 ## Stage 3
 
 Use class map from stage 1 and stage 2 batch outputs.  
-`--output-dir` is the **pipeline root**; results go under `stage3/` or `stage3_<classes>/`:
+`--output-dir` is the **pipeline root**; results go under a stage3 directory chosen by `--task` and optional `--classes-to-process`:
 
-- All classes (or flag lists every class): `<output-dir>/stage3/`
-- Subset only: `<output-dir>/stage3_SSC_SP/` (sorted class names joined by `_`)
+- **`--task denovo` (default):** merge `batch_*_dVars.pkl` → `<output-dir>/stage3/` or `<output-dir>/stage3_<classes>/`
+- **`--task inherited`:** merge `batch_*_dVars_inh.pkl` → `<output-dir>/stage3_inherited/` or `<output-dir>/stage3_inherited_<classes>/`
+
+Within each directory, per-chromosome `variants_snv_nohead.vcf` files are written the same way as for denovo.
 
 ```bash
 make-vcf stage3 \
@@ -87,10 +92,22 @@ make-vcf stage3 \
   --class-map-json /data/out/stage1_patient_ids_by_class.json \
   --denovo-cap 100 \
   --class-cap SSC=80 \
-  --class-cap ABC=120
+  --class-cap ABC=120 \
+  --task denovo
 ```
 
-Process only some classes (writes e.g. `/data/out/stage3_SSC_ABC/`):
+Inherited variants from stage 2 `dVars_inh` batches (example):
+
+```bash
+make-vcf stage3 \
+  --stage2-dir /data/out/stage2 \
+  --output-dir /data/out \
+  --class-map-json /data/out/stage1_patient_ids_by_class.json \
+  --denovo-cap 100 \
+  --task inherited
+```
+
+Process only some classes (e.g. `/data/out/stage3_SSC_ABC/` with `--task denovo`, or `/data/out/stage3_inherited_SSC_ABC/` with `--task inherited`):
 
 ```bash
 make-vcf stage3 \

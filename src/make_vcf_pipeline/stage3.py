@@ -30,16 +30,24 @@ def resolve_stage3_output(
     output_root: Path,
     class_map: Dict[str, List[str]],
     classes_to_process: List[str],
+    task: str = "denovo",
 ) -> tuple[Dict[str, List[str]], Path]:
     """
     Choose which classes to include and the output directory under output_root.
 
-    - If classes_to_process is empty: all keys from class_map; dir ``output_root/stage3``.
-    - If classes_to_process equals the full key set: dir ``output_root/stage3``.
-    - Otherwise: dir ``output_root/stage3_<class>_...`` (sorted class names for stability).
+    - ``task=denovo`` -> ``stage3`` / ``stage3_<classes>`` (de novo variants from dVars).
+    - ``task=inherited`` -> ``stage3_inherited`` / ``stage3_inherited_<classes>`` (from dVars_inh).
+
+    If classes_to_process is empty or lists every class, the short form (``stage3`` or
+    ``stage3_inherited``) is used; otherwise class names are appended sorted.
     """
+    if task not in ("denovo", "inherited"):
+        raise ValueError("task must be 'denovo' or 'inherited'")
+
+    base = "stage3" if task == "denovo" else "stage3_inherited"
+
     if not classes_to_process:
-        return dict(class_map), output_root / "stage3"
+        return dict(class_map), output_root / base
 
     missing = [c for c in classes_to_process if c not in class_map]
     if missing:
@@ -52,10 +60,10 @@ def resolve_stage3_output(
     selected_keys = set(classes_to_process)
 
     if selected_keys == full_keys:
-        return filtered, output_root / "stage3"
+        return filtered, output_root / base
 
     tag = "_".join(sorted(selected_keys))
-    return filtered, output_root / f"stage3_{tag}"
+    return filtered, output_root / f"{base}_{tag}"
 
 
 def parse_class_cap_pairs(pairs: List[str]) -> Dict[str, int]:
@@ -87,6 +95,21 @@ def load_combined_dvars_for_class(stage2_dir: Path, class_name: str) -> VarsMap:
     for file_path in batch_files:
         dvars = _load_vars_file(file_path)
         merge(combined, dvars)
+    return combined
+
+
+def load_combined_dvars_inh_for_class(stage2_dir: Path, class_name: str) -> VarsMap:
+    class_dir = stage2_dir / f"class_{class_name}"
+    combined: VarsMap = {}
+    if not class_dir.is_dir():
+        return combined
+
+    batch_files = sorted(
+        list(class_dir.glob("batch_*_dVars_inh.pkl")) + list(class_dir.glob("batch_*_dVars_inh.json"))
+    )
+    for file_path in batch_files:
+        dvars_inh = _load_vars_file(file_path)
+        merge(combined, dvars_inh)
     return combined
 
 
@@ -187,8 +210,14 @@ def run_stage3(
     default_cap: int | None,
     class_to_cap: Dict[str, int],
     extra_filters: Iterable[FilterFn] | None = None,
+    task: str = "denovo",
 ) -> Stage3Result:
+    if task not in ("denovo", "inherited"):
+        raise ValueError("task must be 'denovo' or 'inherited'")
+
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    load_combo = load_combined_dvars_for_class if task == "denovo" else load_combined_dvars_inh_for_class
 
     dvars_all: VarsMap = {}
     classes_processed = 0
@@ -198,7 +227,7 @@ def run_stage3(
         if cap is None:
             raise ValueError(f"No denovo cap provided for class '{class_name}'")
 
-        dvars_combo = load_combined_dvars_for_class(stage2_dir, class_name)
+        dvars_combo = load_combo(stage2_dir, class_name)
         dvars_filtered = apply_filters(dvars_combo, cap, extra_filters=extra_filters)
         merge(dvars_all, dvars_filtered)
         classes_processed += 1
@@ -211,6 +240,7 @@ def run_stage3(
     summary_file.write_text(
         json.dumps(
             {
+                "task": task,
                 "classes_processed": classes_processed,
                 "classes_included": sorted(class_map.keys()),
                 "variants_kept": len(dvars_all),

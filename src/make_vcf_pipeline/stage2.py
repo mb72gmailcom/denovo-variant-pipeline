@@ -153,7 +153,11 @@ def run_stage2(
     default_suffix: str | None,
     class_to_suffix: Dict[str, str],
     batch_size: int = 1000,
+    task: str = "denovo",
 ) -> List[BatchOutput]:
+    if task not in ("denovo", "inherited"):
+        raise ValueError("task must be 'denovo' or 'inherited'")
+
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: List[BatchOutput] = []
 
@@ -165,12 +169,14 @@ def run_stage2(
         class_dir = output_dir / f"class_{class_name}"
         class_dir.mkdir(parents=True, exist_ok=True)
 
-        patients_nonempty_dvars_inh: set[str] = set()
+        # Sidecar lists: denovo task -> patients with non-empty inherited; inherited task -> patients with non-empty denovo.
+        patients_nonempty_sidecar: set[str] = set()
 
         for batch_index, batch_patient_ids in enumerate(chunked(patient_ids, batch_size), start=1):
             dVars: Dict[str, List[str]] = {}
             dVars_inh: Dict[str, List[str]] = {}
             batch_patients_nonempty_inh: set[str] = set()
+            batch_patients_nonempty_denovo: set[str] = set()
 
             for patient_id in batch_patient_ids:
                 file_path = build_file_path(input_dir, patient_id, suffix)
@@ -181,7 +187,19 @@ def run_stage2(
                 merge(dVars_inh, dvars_inh)
                 if dvars_inh:
                     batch_patients_nonempty_inh.add(patient_id)
-                    patients_nonempty_dvars_inh.add(patient_id)
+                if dvars:
+                    batch_patients_nonempty_denovo.add(patient_id)
+
+            if task == "denovo":
+                batch_sidecar = batch_patients_nonempty_inh
+                batch_list_name = f"batch_{batch_index:05d}_patients_nonempty_dvars_inh.txt"
+                class_list_name = "patients_nonempty_dvars_inh.txt"
+            else:
+                batch_sidecar = batch_patients_nonempty_denovo
+                batch_list_name = f"batch_{batch_index:05d}_patients_nonempty_dvars.txt"
+                class_list_name = "patients_nonempty_dvars.txt"
+
+            patients_nonempty_sidecar.update(batch_sidecar)
 
             dvars_path = class_dir / f"batch_{batch_index:05d}_dVars.pkl"
             dvars_inh_path = class_dir / f"batch_{batch_index:05d}_dVars_inh.pkl"
@@ -191,11 +209,11 @@ def run_stage2(
             with dvars_inh_path.open("wb") as f:
                 pickle.dump(dVars_inh, f)
 
-            inh_list_path = class_dir / f"batch_{batch_index:05d}_patients_nonempty_dvars_inh.txt"
-            inh_list_path.write_text(
-                "\n".join(sorted(batch_patients_nonempty_inh)) + ("\n" if batch_patients_nonempty_inh else ""),
-                encoding="utf-8",
-            )
+            if batch_sidecar:
+                (class_dir / batch_list_name).write_text(
+                    "\n".join(sorted(batch_sidecar)) + "\n",
+                    encoding="utf-8",
+                )
 
             outputs.append(
                 BatchOutput(
@@ -207,11 +225,10 @@ def run_stage2(
                 )
             )
 
-        class_inh_list_path = class_dir / "patients_nonempty_dvars_inh.txt"
-        class_inh_list_path.write_text(
-            "\n".join(sorted(patients_nonempty_dvars_inh))
-            + ("\n" if patients_nonempty_dvars_inh else ""),
-            encoding="utf-8",
-        )
+        if patients_nonempty_sidecar:
+            (class_dir / class_list_name).write_text(
+                "\n".join(sorted(patients_nonempty_sidecar)) + "\n",
+                encoding="utf-8",
+            )
 
     return outputs

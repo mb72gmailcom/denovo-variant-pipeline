@@ -64,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage2: per-class suffix override, repeat as class=suffix.",
     )
     parser.add_argument("--batch-size", type=int, default=1000, help="Stage2: patient batch size")
+    parser.add_argument(
+        "--task",
+        choices=("denovo", "inherited"),
+        default="denovo",
+        help="Stage2 sidecar lists + stage3 source (dVars vs dVars_inh) and output dir (stage3 vs stage3_inherited).",
+    )
 
     # Stage 3 parameters
     parser.add_argument(
@@ -123,6 +129,7 @@ def main() -> None:
             default_suffix=args.suffix,
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
+            task=args.task,
         )
         print(f"[stage2] done -> {len(stage2_outputs)} batch outputs in {stage2_out_dir}")
 
@@ -137,13 +144,16 @@ def main() -> None:
 
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)
-        class_map_run, stage3_out_dir = resolve_stage3_output(args.output_dir, class_map, requested)
+        class_map_run, stage3_out_dir = resolve_stage3_output(
+            args.output_dir, class_map, requested, task=args.task
+        )
         stage3_result = run_stage3(
             stage2_dir=stage2_out_dir,
             output_dir=stage3_out_dir,
             class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
+            task=args.task,
         )
         print(f"[stage3] done -> {stage3_result.output_dir}")
 
