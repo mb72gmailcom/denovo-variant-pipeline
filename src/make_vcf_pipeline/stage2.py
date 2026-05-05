@@ -133,6 +133,19 @@ def parse_class_suffix_pairs(pairs: List[str]) -> Dict[str, str]:
     return mapping
 
 
+def parse_classes_to_process(entries: List[str]) -> List[str]:
+    """Flatten repeatable/comma-separated class names; preserve order, dedupe."""
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in entries:
+        for chunk in raw.split(","):
+            name = chunk.strip()
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
 @dataclass(frozen=True)
 class BatchOutput:
     class_name: str
@@ -154,6 +167,7 @@ def run_stage2(
     class_to_suffix: Dict[str, str],
     batch_size: int = 1000,
     task: str = "denovo",
+    classes_to_process: List[str] | None = None,
 ) -> List[BatchOutput]:
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")
@@ -161,7 +175,17 @@ def run_stage2(
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: List[BatchOutput] = []
 
-    for class_name, patient_ids in class_map.items():
+    if classes_to_process:
+        missing = [c for c in classes_to_process if c not in class_map]
+        if missing:
+            raise ValueError(
+                f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
+            )
+        class_items = [(k, class_map[k]) for k in classes_to_process]
+    else:
+        class_items = list(class_map.items())
+
+    for class_name, patient_ids in class_items:
         suffix = class_to_suffix.get(class_name, default_suffix)
         if not suffix:
             raise ValueError(f"No suffix provided for class '{class_name}'")

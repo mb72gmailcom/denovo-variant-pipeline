@@ -44,6 +44,17 @@ make-vcf stage2 \
   --batch-size 1000
 ```
 
+Run only selected classes in stage 2:
+
+```bash
+make-vcf stage2 \
+  --input-dir /data/in \
+  --output-dir /data/out/stage2 \
+  --class-map-json /data/out/stage1_patient_ids_by_class.json \
+  --suffix vcf.gz \
+  --classes-to-process SSC,ABC
+```
+
 Per-class suffix override:
 
 ```bash

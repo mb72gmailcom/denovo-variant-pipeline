@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import List
 
 from .stage1 import run_stage1
-from .stage2 import load_stage1_class_map, parse_class_suffix_pairs, run_stage2
+from .stage2 import (
+    load_stage1_class_map,
+    parse_class_suffix_pairs,
+    parse_classes_to_process as parse_stage2_classes_to_process,
+    run_stage2,
+)
 from .stage3 import parse_class_cap_pairs, parse_classes_to_process, resolve_stage3_output, run_stage3
 
 
@@ -56,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p2.add_argument("--batch-size", type=int, default=1000)
     p2.add_argument(
+        "--classes-to-process",
+        action="append",
+        default=[],
+        help="Optional: only these classes in stage2 (comma-separated or repeat). Omit for all classes.",
+    )
+    p2.add_argument(
         "--task",
         choices=("denovo", "inherited"),
         default="denovo",
@@ -70,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     p12.add_argument("--suffix", type=str, default=None)
     p12.add_argument("--class-suffix", action="append", default=[])
     p12.add_argument("--batch-size", type=int, default=1000)
+    p12.add_argument(
+        "--classes-to-process",
+        action="append",
+        default=[],
+        help="Optional: only these classes in stage2 (comma-separated or repeat). Omit for all classes.",
+    )
     p12.add_argument(
         "--task",
         choices=("denovo", "inherited"),
@@ -124,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--classes-to-process",
         action="append",
         default=[],
-        help="Optional stage3: only these classes (comma-separated or repeat). Omit for all.",
+        help="Optional: only these classes in stage2 and stage3 (comma-separated or repeat). Omit for all.",
     )
     p123.add_argument(
         "--task",
@@ -148,6 +165,7 @@ def main() -> None:
     if args.command == "stage2":
         class_map = load_stage1_class_map(args.class_map_json)
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
+        classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
         outputs = run_stage2(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
@@ -156,6 +174,7 @@ def main() -> None:
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
             task=args.task,
+            classes_to_process=classes_to_process,
         )
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
         return
@@ -164,6 +183,7 @@ def main() -> None:
         prefixes = _split_csv(args.prefixes)
         stage1_result = run_stage1(args.input_dir, args.output_dir, prefixes)
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
+        classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
         outputs = run_stage2(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
@@ -172,6 +192,7 @@ def main() -> None:
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
             task=args.task,
+            classes_to_process=classes_to_process,
         )
         print(f"Stage1 file: {stage1_result.output_json}")
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
@@ -209,6 +230,7 @@ def main() -> None:
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
             task=args.task,
+            classes_to_process=parse_stage2_classes_to_process(args.classes_to_process),
         )
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)

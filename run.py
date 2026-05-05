@@ -13,7 +13,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from make_vcf_pipeline.stage1 import run_stage1
-from make_vcf_pipeline.stage2 import parse_class_suffix_pairs, run_stage2
+from make_vcf_pipeline.stage2 import (
+    parse_class_suffix_pairs,
+    parse_classes_to_process as parse_stage2_classes_to_process,
+    run_stage2,
+)
 from make_vcf_pipeline.stage3 import (
     parse_class_cap_pairs,
     parse_classes_to_process,
@@ -88,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--classes-to-process",
         action="append",
         default=[],
-        help="Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
+        help="Stage2/Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
     )
     return parser
 
@@ -122,6 +126,7 @@ def main() -> None:
             class_map = json.loads(stage1_json_path.read_text(encoding="utf-8"))
 
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
+        classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
         stage2_outputs = run_stage2(
             input_dir=args.input_dir,
             output_dir=stage2_out_dir,
@@ -130,6 +135,7 @@ def main() -> None:
             class_to_suffix=class_to_suffix,
             batch_size=args.batch_size,
             task=args.task,
+            classes_to_process=classes_to_process,
         )
         print(f"[stage2] done -> {len(stage2_outputs)} batch outputs in {stage2_out_dir}")
 
