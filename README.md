@@ -77,7 +77,7 @@ You can also provide a comma-separated list in one argument:
 Expected file pattern:
 - `input_dir/patient_id/patient_id.<suffix>`
 
-Batch outputs:
+Batch outputs (depends on `--task` and save flags):
 - `class_<name>/batch_00001_dVars.pkl`
 - `class_<name>/batch_00001_dVars_inh.pkl`
 
@@ -85,6 +85,11 @@ Optional patient-ID sidecar lists (only written when that batch or class has at 
 
 - `--task denovo` (default): `batch_*_patients_nonempty_dvars_inh.txt` per batch (if non-empty), and `patients_nonempty_dvars_inh.txt` for the class (if non-empty).
 - `--task inherited`: `batch_*_patients_nonempty_dvars.txt` per batch (if non-empty), and `patients_nonempty_dvars.txt` for the class (if non-empty).
+
+Collection/saving defaults in stage 2:
+
+- `--task denovo`: collect/save `dVars` only. Use `--save-inh` to also collect/save `dVars_inh`.
+- `--task inherited`: collect/save `dVars_inh` only. Use `--save-denovo` (or `--save_denovo`) to also collect/save `dVars`.
 
 ## Stage 3
 

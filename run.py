@@ -74,6 +74,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="denovo",
         help="Stage2 sidecar lists + stage3 source (dVars vs dVars_inh) and output dir (stage3 vs stage3_inherited).",
     )
+    parser.add_argument(
+        "--save-inh",
+        action="store_true",
+        help="Stage2: with --task denovo, also collect/save dVars_inh.",
+    )
+    parser.add_argument(
+        "--save-denovo",
+        "--save_denovo",
+        action="store_true",
+        help="Stage2: with --task inherited, also collect/save dVars.",
+    )
 
     # Stage 3 parameters
     parser.add_argument(
@@ -136,6 +147,8 @@ def main() -> None:
             batch_size=args.batch_size,
             task=args.task,
             classes_to_process=classes_to_process,
+            save_inh=args.save_inh,
+            save_denovo=args.save_denovo,
         )
         print(f"[stage2] done -> {len(stage2_outputs)} batch outputs in {stage2_out_dir}")
 

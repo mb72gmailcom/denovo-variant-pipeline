@@ -63,7 +63,12 @@ def if_denovo(chl: int, mot: int, fat: int) -> bool:
     return chl > 0 and mot == 0 and fat == 0
 
 
-def get_vars(file_path: Path, patient_id: str) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+def get_vars(
+    file_path: Path,
+    patient_id: str,
+    collect_denovo: bool = True,
+    collect_inherited: bool = True,
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
     dvars_inh: Dict[str, List[str]] = {}
     dvars: Dict[str, List[str]] = {}
     open_fn = gzip.open if file_path.suffix == ".gz" else open
@@ -100,9 +105,11 @@ def get_vars(file_path: Path, patient_id: str) -> Tuple[Dict[str, List[str]], Di
                 mot = sum(int(a) > 0 for a in mt.split("/"))
                 fat = sum(int(a) > 0 for a in ft.split("/"))
                 if if_denovo(chl, mot, fat):
-                    update(dvars, kk, gtex)
+                    if collect_denovo:
+                        update(dvars, kk, gtex)
                 else:
-                    update(dvars_inh, kk, gtex)
+                    if collect_inherited:
+                        update(dvars_inh, kk, gtex)
             except Exception:
                 continue
     return dvars, dvars_inh
@@ -151,8 +158,8 @@ class BatchOutput:
     class_name: str
     batch_index: int
     patient_count: int
-    dvars_path: Path
-    dvars_inh_path: Path
+    dvars_path: Path | None
+    dvars_inh_path: Path | None
 
 
 def build_file_path(input_dir: Path, patient_id: str, suffix: str) -> Path:
@@ -168,9 +175,18 @@ def run_stage2(
     batch_size: int = 1000,
     task: str = "denovo",
     classes_to_process: List[str] | None = None,
+    save_inh: bool = False,
+    save_denovo: bool = False,
 ) -> List[BatchOutput]:
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")
+
+    if task == "denovo":
+        collect_denovo = True
+        collect_inherited = save_inh
+    else:
+        collect_denovo = save_denovo
+        collect_inherited = True
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: List[BatchOutput] = []
@@ -206,12 +222,19 @@ def run_stage2(
                 file_path = build_file_path(input_dir, patient_id, suffix)
                 if not file_path.is_file():
                     continue
-                dvars, dvars_inh = get_vars(file_path, patient_id)
-                merge(dVars, dvars)
-                merge(dVars_inh, dvars_inh)
-                if dvars_inh:
+                dvars, dvars_inh = get_vars(
+                    file_path,
+                    patient_id,
+                    collect_denovo=collect_denovo,
+                    collect_inherited=collect_inherited,
+                )
+                if collect_denovo:
+                    merge(dVars, dvars)
+                if collect_inherited:
+                    merge(dVars_inh, dvars_inh)
+                if collect_inherited and dvars_inh:
                     batch_patients_nonempty_inh.add(patient_id)
-                if dvars:
+                if collect_denovo and dvars:
                     batch_patients_nonempty_denovo.add(patient_id)
 
             if task == "denovo":
@@ -225,13 +248,17 @@ def run_stage2(
 
             patients_nonempty_sidecar.update(batch_sidecar)
 
-            dvars_path = class_dir / f"batch_{batch_index:05d}_dVars.pkl"
-            dvars_inh_path = class_dir / f"batch_{batch_index:05d}_dVars_inh.pkl"
+            dvars_path: Path | None = None
+            dvars_inh_path: Path | None = None
 
-            with dvars_path.open("wb") as f:
-                pickle.dump(dVars, f)
-            with dvars_inh_path.open("wb") as f:
-                pickle.dump(dVars_inh, f)
+            if collect_denovo:
+                dvars_path = class_dir / f"batch_{batch_index:05d}_dVars.pkl"
+                with dvars_path.open("wb") as f:
+                    pickle.dump(dVars, f)
+            if collect_inherited:
+                dvars_inh_path = class_dir / f"batch_{batch_index:05d}_dVars_inh.pkl"
+                with dvars_inh_path.open("wb") as f:
+                    pickle.dump(dVars_inh, f)
 
             if batch_sidecar:
                 (class_dir / batch_list_name).write_text(

@@ -71,7 +71,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("denovo", "inherited"),
         default="denovo",
         help="denovo: list patients with non-empty inherited (sidecar txt only if non-empty). "
-        "inherited: list patients with non-empty denovo (sidecar txt only if non-empty). Pickles unchanged.",
+        "inherited: list patients with non-empty denovo (sidecar txt only if non-empty).",
+    )
+    p2.add_argument(
+        "--save-inh",
+        action="store_true",
+        help="Stage2: with --task denovo, also collect/save dVars_inh.",
+    )
+    p2.add_argument(
+        "--save-denovo",
+        "--save_denovo",
+        action="store_true",
+        help="Stage2: with --task inherited, also collect/save dVars.",
     )
 
     p12 = subparsers.add_parser("run12", help="Run stage1 then stage2")
@@ -92,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("denovo", "inherited"),
         default="denovo",
         help="Stage2 task (same meaning as make-vcf stage2 --task).",
+    )
+    p12.add_argument("--save-inh", action="store_true", help="Run12 stage2: also save inherited while task=denovo.")
+    p12.add_argument(
+        "--save-denovo",
+        "--save_denovo",
+        action="store_true",
+        help="Run12 stage2: also save denovo while task=inherited.",
     )
 
     p3 = subparsers.add_parser("stage3", help="Post-process stage2 outputs into chromosome files")
@@ -149,6 +167,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="denovo",
         help="Applies to stage2 (sidecar lists) and stage3 (which pickle set and output dir prefix).",
     )
+    p123.add_argument("--save-inh", action="store_true", help="Run123 stage2: also save inherited while task=denovo.")
+    p123.add_argument(
+        "--save-denovo",
+        "--save_denovo",
+        action="store_true",
+        help="Run123 stage2: also save denovo while task=inherited.",
+    )
     return parser
 
 
@@ -175,6 +200,8 @@ def main() -> None:
             batch_size=args.batch_size,
             task=args.task,
             classes_to_process=classes_to_process,
+            save_inh=args.save_inh,
+            save_denovo=args.save_denovo,
         )
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
         return
@@ -193,6 +220,8 @@ def main() -> None:
             batch_size=args.batch_size,
             task=args.task,
             classes_to_process=classes_to_process,
+            save_inh=args.save_inh,
+            save_denovo=args.save_denovo,
         )
         print(f"Stage1 file: {stage1_result.output_json}")
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
@@ -231,6 +260,8 @@ def main() -> None:
             batch_size=args.batch_size,
             task=args.task,
             classes_to_process=parse_stage2_classes_to_process(args.classes_to_process),
+            save_inh=args.save_inh,
+            save_denovo=args.save_denovo,
         )
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)
