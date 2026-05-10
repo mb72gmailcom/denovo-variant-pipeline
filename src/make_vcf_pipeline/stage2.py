@@ -63,11 +63,22 @@ def if_denovo(chl: int, mot: int, fat: int) -> bool:
     return chl > 0 and mot == 0 and fat == 0
 
 
+def if_denovo_ext(child: int, mother: int, father: int) -> bool:
+    if child == 0 and (mother == 2 or father == 2):
+        return True
+    if child == 1 and (mother + father == 4 or mother + father == 0):
+        return True
+    if child == 2 and (mother == 0 or father == 0):
+        return True
+    return False
+
+
 def get_vars(
     file_path: Path,
     patient_id: str,
     collect_denovo: bool = True,
     collect_inherited: bool = True,
+    use_ext_denovo: bool = False,
 ) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
     dvars_inh: Dict[str, List[str]] = {}
     dvars: Dict[str, List[str]] = {}
@@ -104,7 +115,8 @@ def get_vars(
                 chl = sum(int(a) > 0 for a in ch.split("/"))
                 mot = sum(int(a) > 0 for a in mt.split("/"))
                 fat = sum(int(a) > 0 for a in ft.split("/"))
-                if if_denovo(chl, mot, fat):
+                is_denovo = if_denovo_ext(chl, mot, fat) if use_ext_denovo else if_denovo(chl, mot, fat)
+                if is_denovo:
                     if collect_denovo:
                         update(dvars, kk, gtex)
                 else:
@@ -177,6 +189,7 @@ def run_stage2(
     classes_to_process: List[str] | None = None,
     save_inh: bool = False,
     save_denovo: bool = False,
+    use_ext_denovo: bool = False,
 ) -> List[BatchOutput]:
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")
@@ -227,6 +240,7 @@ def run_stage2(
                     patient_id,
                     collect_denovo=collect_denovo,
                     collect_inherited=collect_inherited,
+                    use_ext_denovo=use_ext_denovo,
                 )
                 if collect_denovo:
                     merge(dVars, dvars)

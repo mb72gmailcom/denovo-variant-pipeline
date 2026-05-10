@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stage2: with --task inherited, also collect/save dVars.",
     )
+    p2.add_argument(
+        "--use-ext-denovo",
+        action="store_true",
+        help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
+    )
 
     p12 = subparsers.add_parser("run12", help="Run stage1 then stage2")
     p12.add_argument("--input-dir", type=Path, required=True)
@@ -110,6 +115,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--save_denovo",
         action="store_true",
         help="Run12 stage2: also save denovo while task=inherited.",
+    )
+    p12.add_argument(
+        "--use-ext-denovo",
+        action="store_true",
+        help="Run12 stage2: use extended denovo definition (if_denovo_ext).",
     )
 
     p3 = subparsers.add_parser("stage3", help="Post-process stage2 outputs into chromosome files")
@@ -174,6 +184,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run123 stage2: also save denovo while task=inherited.",
     )
+    p123.add_argument(
+        "--use-ext-denovo",
+        action="store_true",
+        help="Run123 stage2: use extended denovo definition (if_denovo_ext).",
+    )
     return parser
 
 
@@ -202,6 +217,7 @@ def main() -> None:
             classes_to_process=classes_to_process,
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
+            use_ext_denovo=args.use_ext_denovo,
         )
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
         return
@@ -222,6 +238,7 @@ def main() -> None:
             classes_to_process=classes_to_process,
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
+            use_ext_denovo=args.use_ext_denovo,
         )
         print(f"Stage1 file: {stage1_result.output_json}")
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
@@ -262,6 +279,7 @@ def main() -> None:
             classes_to_process=parse_stage2_classes_to_process(args.classes_to_process),
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
+            use_ext_denovo=args.use_ext_denovo,
         )
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)

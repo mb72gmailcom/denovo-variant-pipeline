@@ -85,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stage2: with --task inherited, also collect/save dVars.",
     )
+    parser.add_argument(
+        "--use-ext-denovo",
+        action="store_true",
+        help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
+    )
 
     # Stage 3 parameters
     parser.add_argument(
@@ -149,6 +154,7 @@ def main() -> None:
             classes_to_process=classes_to_process,
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
+            use_ext_denovo=args.use_ext_denovo,
         )
         print(f"[stage2] done -> {len(stage2_outputs)} batch outputs in {stage2_out_dir}")
 

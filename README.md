@@ -91,6 +91,11 @@ Collection/saving defaults in stage 2:
 - `--task denovo`: collect/save `dVars` only. Use `--save-inh` to also collect/save `dVars_inh`.
 - `--task inherited`: collect/save `dVars_inh` only. Use `--save-denovo` (or `--save_denovo`) to also collect/save `dVars`.
 
+Denovo classification (stage 2):
+
+- Default: `if_denovo()` (child alt count > 0, both parents 0).
+- `--use-ext-denovo`: use `if_denovo_ext()` instead (your extended rules on the same child/mother/father alt counts).
+
 ## Stage 3
 
 Use class map from stage 1 and stage 2 batch outputs.  
