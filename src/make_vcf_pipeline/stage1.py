@@ -144,91 +144,58 @@ def file_stat_value(file_path: Path, stats: str) -> int:
     raise ValueError("stats must be 'size' or 'counts'")
 
 
-def compute_file_metadata_by_patient(
+def process_patients_for_suffix(
     input_dir: Path,
     patient_ids: List[str],
     suffix: str,
     stats: str,
-) -> tuple[Dict[str, int], Dict[str, int], List[str]]:
+    cap_min: int,
+) -> tuple[Dict[str, int], Dict[str, int], List[str], List[str], Dict[str, int]]:
+    """One pass: stats, mtime, missed, small, and byte sizes for existing files."""
     stats_dict: Dict[str, int] = {}
     mtime_dict: Dict[str, int] = {}
+    sizes: Dict[str, int] = {}
     missed: List[str] = []
+    small: List[str] = []
+
     for patient_id in patient_ids:
         file_path = build_patient_file_path(input_dir, patient_id, suffix)
         if not file_path.is_file():
             missed.append(patient_id)
             continue
+
         st = file_path.stat()
+        size = st.st_size
+        sizes[patient_id] = size
         mtime_dict[patient_id] = int(st.st_mtime)
+
         if stats == "size":
-            stats_dict[patient_id] = st.st_size
+            stats_dict[patient_id] = size
         else:
             stats_dict[patient_id] = file_stat_value(file_path, stats)
-    return stats_dict, mtime_dict, missed
 
-
-def compute_stats_by_patient(
-    input_dir: Path,
-    patient_ids: List[str],
-    suffix: str,
-    stats: str,
-) -> tuple[Dict[str, int], List[str]]:
-    stats_dict, _, missed = compute_file_metadata_by_patient(input_dir, patient_ids, suffix, stats)
-    return stats_dict, missed
-
-
-def patient_file_size_in_range(
-    input_dir: Path,
-    patient_id: str,
-    suffix: str,
-    cap_min: int,
-    cap_max: int,
-) -> bool:
-    file_path = build_patient_file_path(input_dir, patient_id, suffix)
-    if not file_path.is_file():
-        return False
-    size = file_path.stat().st_size
-    return cap_min <= size <= cap_max
-
-
-def patients_with_file_smaller_than_cap(
-    input_dir: Path,
-    patient_ids: List[str],
-    suffix: str,
-    cap_min: int,
-) -> List[str]:
-    small: List[str] = []
-    for patient_id in patient_ids:
-        file_path = build_patient_file_path(input_dir, patient_id, suffix)
-        if not file_path.is_file():
-            continue
-        if file_path.stat().st_size < cap_min:
+        if size < cap_min:
             small.append(patient_id)
-    return sorted(small)
+
+    return stats_dict, mtime_dict, missed, small, sizes
 
 
-def filter_classes_by_file_size(
-    input_dir: Path,
-    classes_to_patients: Dict[str, List[str]],
+def filter_class_by_sizes(
+    patient_ids: List[str],
+    sizes_by_suffix: Dict[str, Dict[str, int]],
     suffixes: List[str],
     cap_min: int,
     cap_max: int,
-) -> Dict[str, List[str]]:
-    if not suffixes:
-        return {class_name: list(patient_ids) for class_name, patient_ids in classes_to_patients.items()}
-
-    filtered: Dict[str, List[str]] = {}
-    for class_name, patient_ids in classes_to_patients.items():
-        kept = [
-            patient_id
-            for patient_id in patient_ids
-            if all(
-                patient_file_size_in_range(input_dir, patient_id, suffix, cap_min, cap_max)
-                for suffix in suffixes
-            )
-        ]
-        filtered[class_name] = kept
-    return filtered
+) -> List[str]:
+    return [
+        patient_id
+        for patient_id in patient_ids
+        if all(
+            patient_id in sizes_by_suffix[suffix]
+            and cap_min <= sizes_by_suffix[suffix][patient_id] <= cap_max
+            for suffix in suffixes
+        )
+    ]
 
 
 def run_stage1(
@@ -260,13 +227,17 @@ def run_stage1(
     mtime_json_paths: Dict[str, Path] = {}
     missed_txt_paths: Dict[str, Path] = {}
     small_txt_paths: Dict[str, Path] = {}
+    filtered_classes: Dict[str, List[str]] = {}
+
     if suffixes:
         for class_name, patient_ids in classes_to_patients.items():
+            sizes_by_suffix: Dict[str, Dict[str, int]] = {}
             for suffix in suffixes:
                 label = f"{class_name}_{suffix_label(suffix)}"
-                stats_dict, mtime_dict, missed = compute_file_metadata_by_patient(
-                    input_dir, patient_ids, suffix, stats
+                stats_dict, mtime_dict, missed, small, sizes = process_patients_for_suffix(
+                    input_dir, patient_ids, suffix, stats, cap_min
                 )
+                sizes_by_suffix[suffix] = sizes
 
                 stats_path = stage1_dir / f"stage1_stats_{stats}_{label}.json"
                 stats_path.write_text(json.dumps(stats_dict, indent=2, sort_keys=True), encoding="utf-8")
@@ -277,22 +248,27 @@ def run_stage1(
                 mtime_json_paths[label] = mtime_path
 
                 missed_path = stage1_dir / f"{label}.missed.txt"
-                missed_path.write_text("\n".join(sorted(missed)) + ("\n" if missed else ""), encoding="utf-8")
+                missed_path.write_text(
+                    "\n".join(sorted(missed)) + ("\n" if missed else ""),
+                    encoding="utf-8",
+                )
                 missed_txt_paths[label] = missed_path
 
-                small_patients = patients_with_file_smaller_than_cap(
-                    input_dir, patient_ids, suffix, cap_min
-                )
                 small_path = stage1_dir / f"{label}.small_{cap_min}.txt"
                 small_path.write_text(
-                    "\n".join(small_patients) + ("\n" if small_patients else ""),
+                    "\n".join(sorted(small)) + ("\n" if small else ""),
                     encoding="utf-8",
                 )
                 small_txt_paths[label] = small_path
 
-    filtered_classes = filter_classes_by_file_size(
-        input_dir, classes_to_patients, suffixes or [], cap_min, cap_max
-    )
+            filtered_classes[class_name] = filter_class_by_sizes(
+                patient_ids, sizes_by_suffix, suffixes, cap_min, cap_max
+            )
+    else:
+        filtered_classes = {
+            class_name: list(patient_ids) for class_name, patient_ids in classes_to_patients.items()
+        }
+
     filtered_output_json = stage1_dir / filtered_class_map_filename(cap_min, cap_max)
     with filtered_output_json.open("w", encoding="utf-8") as f:
         json.dump(filtered_classes, f, indent=2, sort_keys=True)
