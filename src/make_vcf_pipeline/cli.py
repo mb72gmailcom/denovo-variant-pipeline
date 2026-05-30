@@ -5,9 +5,16 @@ import json
 from pathlib import Path
 from typing import List
 
-from .stage1 import run_stage1
+from .stage1 import (
+    infer_pipeline_root,
+    load_class_map,
+    parse_suffixes,
+    resolve_class_map_json,
+    resolve_stage2_input_dir,
+    resolve_stage2_output_dir,
+    run_stage1,
+)
 from .stage2 import (
-    load_stage1_class_map,
     parse_class_suffix_pairs,
     parse_classes_to_process as parse_stage2_classes_to_process,
     run_stage2,
@@ -30,22 +37,44 @@ def build_parser() -> argparse.ArgumentParser:
 
     p1 = subparsers.add_parser("stage1", help="Create ordered patient ID lists by class")
     p1.add_argument("--input-dir", type=Path, required=True)
-    p1.add_argument("--output-dir", type=Path, required=True)
+    p1.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Pipeline output root; stage1 writes under <output-dir>/stage1/.",
+    )
     p1.add_argument(
         "--prefixes",
         type=str,
         default="",
         help="Comma-separated class prefixes. Empty means uniform cohort.",
     )
+    p1.add_argument(
+        "--stats",
+        choices=("size", "counts"),
+        default="size",
+        help="Per-patient file statistic when --suffixes is set (default: size).",
+    )
+    p1.add_argument(
+        "--suffixes",
+        type=str,
+        default="",
+        help="Comma-separated file suffixes for stage1 stats, e.g. .vcf.gz,.final.vcf.gz",
+    )
 
     p2 = subparsers.add_parser("stage2", help="Process patient files in batches")
     p2.add_argument("--input-dir", type=Path, required=True)
-    p2.add_argument("--output-dir", type=Path, required=True)
+    p2.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Pipeline output root or stage2 dir; writes under <root>/stage2/ when root is given.",
+    )
     p2.add_argument(
         "--class-map-json",
         type=Path,
-        required=True,
-        help="Path to stage1_patient_ids_by_class.json",
+        default=None,
+        help="Optional; default <pipeline-root>/stage1/stage1_patient_ids_by_class.json",
     )
     p2.add_argument(
         "--suffix",
@@ -123,14 +152,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p3 = subparsers.add_parser("stage3", help="Post-process stage2 outputs into chromosome files")
-    p3.add_argument("--stage2-dir", type=Path, required=True)
+    p3.add_argument(
+        "--stage2-dir",
+        type=Path,
+        default=None,
+        help="Optional; default <output-dir>/stage2",
+    )
     p3.add_argument(
         "--output-dir",
         type=Path,
         required=True,
         help="Pipeline output root; stage3 writes under stage3/ or stage3_<classes>/ (denovo), or stage3_inherited/... (inherited).",
     )
-    p3.add_argument("--class-map-json", type=Path, required=True)
+    p3.add_argument("--class-map-json", type=Path, default=None)
     p3.add_argument(
         "--denovo-cap",
         type=int,
@@ -198,17 +232,31 @@ def main() -> None:
 
     if args.command == "stage1":
         prefixes = _split_csv(args.prefixes)
-        result = run_stage1(args.input_dir, args.output_dir, prefixes)
-        print(f"Stage1 complete: {result.output_json}")
+        result = run_stage1(
+            args.input_dir,
+            args.output_dir,
+            prefixes,
+            stats=args.stats,
+            suffixes=parse_suffixes(args.suffixes),
+        )
+        print(f"Stage1 complete: {result.output_dir}")
+        print(f"Stage1 class map: {result.output_json}")
+        if result.stats_json_paths:
+            print(json.dumps({k: str(v) for k, v in result.stats_json_paths.items()}, indent=2))
+        if result.missed_txt_paths:
+            print(json.dumps({k: str(v) for k, v in result.missed_txt_paths.items()}, indent=2))
         return
 
     if args.command == "stage2":
-        class_map = load_stage1_class_map(args.class_map_json)
+        pipeline_root = infer_pipeline_root(args.output_dir)
+        class_map_path = resolve_class_map_json(args.class_map_json, pipeline_root)
+        class_map = load_class_map(explicit=class_map_path)
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
+        stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
         outputs = run_stage2(
             input_dir=args.input_dir,
-            output_dir=args.output_dir,
+            output_dir=stage2_out_dir,
             class_map=class_map,
             default_suffix=args.suffix,
             class_to_suffix=class_to_suffix,
@@ -227,9 +275,10 @@ def main() -> None:
         stage1_result = run_stage1(args.input_dir, args.output_dir, prefixes)
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
+        stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
         outputs = run_stage2(
             input_dir=args.input_dir,
-            output_dir=args.output_dir,
+            output_dir=stage2_out_dir,
             class_map=stage1_result.classes_to_patients,
             default_suffix=args.suffix,
             class_to_suffix=class_to_suffix,
@@ -245,14 +294,17 @@ def main() -> None:
         return
 
     if args.command == "stage3":
-        class_map = load_stage1_class_map(args.class_map_json)
+        pipeline_root = args.output_dir
+        class_map_path = resolve_class_map_json(args.class_map_json, pipeline_root)
+        class_map = load_class_map(explicit=class_map_path)
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)
         class_map_run, stage3_dir = resolve_stage3_output(
             args.output_dir, class_map, requested, task=args.task
         )
+        stage2_dir = resolve_stage2_input_dir(args.stage2_dir, pipeline_root)
         result = run_stage3(
-            stage2_dir=args.stage2_dir,
+            stage2_dir=stage2_dir,
             output_dir=stage3_dir,
             class_map=class_map_run,
             default_cap=args.denovo_cap,
@@ -266,7 +318,7 @@ def main() -> None:
         prefixes = _split_csv(args.prefixes)
         stage1_result = run_stage1(args.input_dir, args.output_dir, prefixes)
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
-        stage2_dir = args.output_dir / "stage2"
+        stage2_dir = resolve_stage2_output_dir(args.output_dir)
 
         stage2_outputs = run_stage2(
             input_dir=args.input_dir,

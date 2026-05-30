@@ -137,7 +137,9 @@ def chunked(items: Iterable[str], size: int) -> Iterator[List[str]]:
 
 
 def load_stage1_class_map(path: Path) -> Dict[str, List[str]]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    from .stage1 import load_class_map
+
+    return load_class_map(explicit=path)
 
 
 def parse_class_suffix_pairs(pairs: List[str]) -> Dict[str, str]:

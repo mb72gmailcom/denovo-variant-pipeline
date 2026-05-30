@@ -15,6 +15,8 @@ pip install -e .
 
 ## Stage 1
 
+`--output-dir` is the **pipeline root**; stage 1 writes under `<output-dir>/stage1/`.
+
 Uniform cohort:
 
 ```bash
@@ -27,19 +29,43 @@ Classed cohort by prefixes:
 make-vcf stage1 --input-dir /data/in --output-dir /data/out --prefixes SSC,ABC
 ```
 
-Outputs:
+Outputs (under `<output-dir>/stage1/`):
 - `stage1_patient_ids_by_class.json`
 - `stage1_<class>_patient_ids.txt`
 
+Optional file statistics (when `--suffixes` is provided):
+
+- `--stats size` (default): byte size of each file
+- `--stats counts`: line count (supports `.gz`)
+
+Paths checked: `input_dir/<patient_id>/<patient_id>.<suffix>` for each suffix.
+
+One JSON per class prefix and suffix, e.g. `stage1_stats_SSC_final_vcf_gz.json` (patients with existing files only).
+
+Missing files: patient IDs with no file at the expected path are listed in `{prefix}_{suffix_label}.missed.txt`, e.g. `SSC_final_vcf_gz.missed.txt` (always written; empty if none missing).
+
+Example:
+
+```bash
+make-vcf stage1 \
+  --input-dir /data/in \
+  --output-dir /data/out \
+  --prefixes SSC,SP \
+  --suffixes .final.vcf.gz,.denovo.final.vcf.gz \
+  --stats counts
+```
+
 ## Stage 2
+
+`--output-dir` is the **pipeline root** (writes under `<output-dir>/stage2/`).  
+`--class-map-json` is **optional**; default is `<output-dir>/stage1/stage1_patient_ids_by_class.json`.
 
 Use stage 1 class map, one default suffix for all classes:
 
 ```bash
 make-vcf stage2 \
   --input-dir /data/in \
-  --output-dir /data/out/stage2 \
-  --class-map-json /data/out/stage1_patient_ids_by_class.json \
+  --output-dir /data/out \
   --suffix vcf.gz \
   --batch-size 1000
 ```
@@ -49,8 +75,7 @@ Run only selected classes in stage 2:
 ```bash
 make-vcf stage2 \
   --input-dir /data/in \
-  --output-dir /data/out/stage2 \
-  --class-map-json /data/out/stage1_patient_ids_by_class.json \
+  --output-dir /data/out \
   --suffix vcf.gz \
   --classes-to-process SSC,ABC
 ```
@@ -60,8 +85,7 @@ Per-class suffix override:
 ```bash
 make-vcf stage2 \
   --input-dir /data/in \
-  --output-dir /data/out/stage2 \
-  --class-map-json /data/out/stage1_patient_ids_by_class.json \
+  --output-dir /data/out \
   --suffix vcf.gz \
   --class-suffix SSC=vcf.gz \
   --class-suffix ABC=vcf \
@@ -104,13 +128,14 @@ Use class map from stage 1 and stage 2 batch outputs.
 - **`--task denovo` (default):** merge `batch_*_dVars.pkl` → `<output-dir>/stage3/` or `<output-dir>/stage3_<classes>/`
 - **`--task inherited`:** merge `batch_*_dVars_inh.pkl` → `<output-dir>/stage3_inherited/` or `<output-dir>/stage3_inherited_<classes>/`
 
+`--class-map-json` defaults to `<output-dir>/stage1/stage1_patient_ids_by_class.json`.  
+`--stage2-dir` defaults to `<output-dir>/stage2`.
+
 Within each directory, per-chromosome `variants_snv_nohead.vcf` files are written the same way as for denovo.
 
 ```bash
 make-vcf stage3 \
-  --stage2-dir /data/out/stage2 \
   --output-dir /data/out \
-  --class-map-json /data/out/stage1_patient_ids_by_class.json \
   --denovo-cap 100 \
   --class-cap SSC=80 \
   --class-cap ABC=120 \
@@ -121,9 +146,7 @@ Inherited variants from stage 2 `dVars_inh` batches (example):
 
 ```bash
 make-vcf stage3 \
-  --stage2-dir /data/out/stage2 \
   --output-dir /data/out \
-  --class-map-json /data/out/stage1_patient_ids_by_class.json \
   --denovo-cap 100 \
   --task inherited
 ```
@@ -132,9 +155,7 @@ Process only some classes (e.g. `/data/out/stage3_SSC_ABC/` with `--task denovo`
 
 ```bash
 make-vcf stage3 \
-  --stage2-dir /data/out/stage2 \
   --output-dir /data/out \
-  --class-map-json /data/out/stage1_patient_ids_by_class.json \
   --denovo-cap 100 \
   --classes-to-process SSC,ABC
 ```

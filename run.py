@@ -12,7 +12,13 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from make_vcf_pipeline.stage1 import run_stage1
+from make_vcf_pipeline.stage1 import (
+    load_class_map,
+    parse_suffixes,
+    resolve_stage2_input_dir,
+    resolve_stage2_output_dir,
+    run_stage1,
+)
 from make_vcf_pipeline.stage2 import (
     parse_class_suffix_pairs,
     parse_classes_to_process as parse_stage2_classes_to_process,
@@ -52,6 +58,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="Stage1: comma-separated patient class prefixes (empty means one class).",
+    )
+    parser.add_argument(
+        "--stats",
+        choices=("size", "counts"),
+        default="size",
+        help="Stage1: per-patient file statistic when --suffixes is set (default: size).",
+    )
+    parser.add_argument(
+        "--suffixes",
+        type=str,
+        default="",
+        help="Stage1: comma-separated suffixes for file stats, e.g. .vcf.gz,.final.vcf.gz",
     )
 
     # Stage 2 parameters
@@ -120,26 +138,29 @@ def main() -> None:
     if not (args.run_stage1 or args.run_stage2 or args.run_stage3):
         raise ValueError("Select at least one stage flag: --run-stage1/--run-stage2/--run-stage3")
 
-    stage1_out_dir = args.output_dir
-    stage1_json_path = stage1_out_dir / "stage1_patient_ids_by_class.json"
-    stage2_out_dir = args.output_dir / "stage2"
+    stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
 
     class_map = None
 
     if args.run_stage1:
         prefixes = _split_csv(args.prefixes)
-        stage1_result = run_stage1(args.input_dir, stage1_out_dir, prefixes)
+        stage1_result = run_stage1(
+            args.input_dir,
+            args.output_dir,
+            prefixes,
+            stats=args.stats,
+            suffixes=parse_suffixes(args.suffixes),
+        )
         class_map = stage1_result.classes_to_patients
-        print(f"[stage1] done -> {stage1_result.output_json}")
+        print(f"[stage1] done -> {stage1_result.output_dir}")
+        if stage1_result.stats_json_paths:
+            print(f"[stage1] stats -> {len(stage1_result.stats_json_paths)} files")
+        if stage1_result.missed_txt_paths:
+            print(f"[stage1] missed -> {len(stage1_result.missed_txt_paths)} files")
 
     if args.run_stage2:
         if class_map is None:
-            if not stage1_json_path.is_file():
-                raise FileNotFoundError(
-                    f"Stage1 class map not found at '{stage1_json_path}'. "
-                    "Run with --run-stage1 first or create this file."
-                )
-            class_map = json.loads(stage1_json_path.read_text(encoding="utf-8"))
+            class_map = load_class_map(pipeline_root=args.output_dir)
 
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
@@ -160,12 +181,7 @@ def main() -> None:
 
     if args.run_stage3:
         if class_map is None:
-            if not stage1_json_path.is_file():
-                raise FileNotFoundError(
-                    f"Stage1 class map not found at '{stage1_json_path}'. "
-                    "Run with --run-stage1 first or create this file."
-                )
-            class_map = json.loads(stage1_json_path.read_text(encoding="utf-8"))
+            class_map = load_class_map(pipeline_root=args.output_dir)
 
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)
@@ -173,7 +189,7 @@ def main() -> None:
             args.output_dir, class_map, requested, task=args.task
         )
         stage3_result = run_stage3(
-            stage2_dir=stage2_out_dir,
+            stage2_dir=resolve_stage2_input_dir(None, args.output_dir),
             output_dir=stage3_out_dir,
             class_map=class_map_run,
             default_cap=args.denovo_cap,
