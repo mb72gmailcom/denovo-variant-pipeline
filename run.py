@@ -13,6 +13,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from make_vcf_pipeline.stage1 import (
+    DEFAULT_CAP_MAX,
+    DEFAULT_CAP_MIN,
     load_class_map,
     parse_suffixes,
     resolve_stage2_input_dir,
@@ -70,6 +72,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="Stage1: comma-separated suffixes for file stats, e.g. .vcf.gz,.final.vcf.gz",
+    )
+    parser.add_argument(
+        "--cap-min",
+        type=int,
+        default=DEFAULT_CAP_MIN,
+        help="Stage1 size filter lower bound (bytes); stage2/3 read filtered class map with these caps.",
+    )
+    parser.add_argument(
+        "--cap-max",
+        type=int,
+        default=DEFAULT_CAP_MAX,
+        help="Stage1 size filter upper bound (bytes); stage2/3 read filtered class map with these caps.",
     )
 
     # Stage 2 parameters
@@ -150,17 +164,26 @@ def main() -> None:
             prefixes,
             stats=args.stats,
             suffixes=parse_suffixes(args.suffixes),
+            cap_min=args.cap_min,
+            cap_max=args.cap_max,
         )
-        class_map = stage1_result.classes_to_patients
+        class_map = stage1_result.filtered_classes_to_patients
         print(f"[stage1] done -> {stage1_result.output_dir}")
+        print(f"[stage1] filtered class map -> {stage1_result.filtered_output_json}")
         if stage1_result.stats_json_paths:
             print(f"[stage1] stats -> {len(stage1_result.stats_json_paths)} files")
+        if stage1_result.mtime_json_paths:
+            print(f"[stage1] mtime -> {len(stage1_result.mtime_json_paths)} files")
         if stage1_result.missed_txt_paths:
             print(f"[stage1] missed -> {len(stage1_result.missed_txt_paths)} files")
+        if stage1_result.small_txt_paths:
+            print(f"[stage1] small -> {len(stage1_result.small_txt_paths)} files")
 
     if args.run_stage2:
         if class_map is None:
-            class_map = load_class_map(pipeline_root=args.output_dir)
+            class_map = load_class_map(
+                pipeline_root=args.output_dir, cap_min=args.cap_min, cap_max=args.cap_max
+            )
 
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
@@ -181,7 +204,9 @@ def main() -> None:
 
     if args.run_stage3:
         if class_map is None:
-            class_map = load_class_map(pipeline_root=args.output_dir)
+            class_map = load_class_map(
+                pipeline_root=args.output_dir, cap_min=args.cap_min, cap_max=args.cap_max
+            )
 
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)

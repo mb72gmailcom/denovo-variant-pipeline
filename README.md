@@ -30,8 +30,11 @@ make-vcf stage1 --input-dir /data/in --output-dir /data/out --prefixes SSC,ABC
 ```
 
 Outputs (under `<output-dir>/stage1/`):
-- `stage1_patient_ids_by_class.json`
+- `stage1_patient_ids_by_class.json` (all patients by class)
+- `stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json` (default caps 22000–75000; used by stage 2/3)
 - `stage1_<class>_patient_ids.txt`
+
+Size filtering (`--cap-min`, `--cap-max`, defaults 22000 and 75000): when `--suffixes` is set, keep a patient only if **every** listed suffix file exists and its byte size is within `[cap_min, cap_max]`. Without `--suffixes`, the filtered file matches the full class map.
 
 Optional file statistics (when `--suffixes` is provided):
 
@@ -40,9 +43,11 @@ Optional file statistics (when `--suffixes` is provided):
 
 Paths checked: `input_dir/<patient_id>/<patient_id>.<suffix>` for each suffix.
 
-One JSON per class prefix and suffix, e.g. `stage1_stats_SSC_final_vcf_gz.json` (patients with existing files only).
+One JSON per class prefix and suffix for `--stats` (`stage1_stats_size_...` or `stage1_stats_counts_...`) and always for modification time (`stage1_stats_mtime_SSC_final_vcf_gz.json`). Mtime values are Unix epoch seconds (`st_mtime`). Only patients with existing files are included.
 
 Missing files: patient IDs with no file at the expected path are listed in `{prefix}_{suffix_label}.missed.txt`, e.g. `SSC_final_vcf_gz.missed.txt` (always written; empty if none missing).
+
+Files smaller than `--cap-min`: patient IDs with an existing file below the minimum size cap are listed in `{prefix}_{suffix_label}.small_{cap_min}.txt`, e.g. `SSC_final_vcf_gz.small_22000.txt` (always written; empty if none).
 
 Example:
 
@@ -58,7 +63,7 @@ make-vcf stage1 \
 ## Stage 2
 
 `--output-dir` is the **pipeline root** (writes under `<output-dir>/stage2/`).  
-`--class-map-json` is **optional**; default is `<output-dir>/stage1/stage1_patient_ids_by_class.json`.
+`--class-map-json` is **optional**; default is `<output-dir>/stage1/stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json` (same `--cap-min` / `--cap-max` as stage 1, defaults 22000 / 75000).
 
 Use stage 1 class map, one default suffix for all classes:
 
@@ -128,8 +133,9 @@ Use class map from stage 1 and stage 2 batch outputs.
 - **`--task denovo` (default):** merge `batch_*_dVars.pkl` → `<output-dir>/stage3/` or `<output-dir>/stage3_<classes>/`
 - **`--task inherited`:** merge `batch_*_dVars_inh.pkl` → `<output-dir>/stage3_inherited/` or `<output-dir>/stage3_inherited_<classes>/`
 
-`--class-map-json` defaults to `<output-dir>/stage1/stage1_patient_ids_by_class.json`.  
-`--stage2-dir` defaults to `<output-dir>/stage2`.
+`--class-map-json` defaults to `<output-dir>/stage1/stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json`.  
+`--stage2-dir` defaults to `<output-dir>/stage2`.  
+Use the same `--cap-min` / `--cap-max` as stage 1 (defaults 22000 / 75000).
 
 Within each directory, per-chromosome `variants_snv_nohead.vcf` files are written the same way as for denovo.
 
