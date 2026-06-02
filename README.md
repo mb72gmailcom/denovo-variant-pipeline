@@ -109,6 +109,8 @@ Expected file pattern:
 Batch outputs (depends on `--task` and save flags):
 - `class_<name>/batch_00001_dVars.pkl`
 - `class_<name>/batch_00001_dVars_inh.pkl`
+- `class_<name>/patient_dVars_counts.json` (variant records per patient for the class, written once after all batches)
+- `class_<name>/patient_dVars_inh_counts.json` (when inherited variants are collected)
 
 Optional patient-ID sidecar lists (only written when that batch or class has at least one ID):
 

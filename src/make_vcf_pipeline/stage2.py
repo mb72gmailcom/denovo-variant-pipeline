@@ -167,6 +167,17 @@ def parse_classes_to_process(entries: List[str]) -> List[str]:
     return out
 
 
+def count_patient_variant_records(dvars: Dict[str, List[str]]) -> int:
+    return sum(len(values) for values in dvars.values())
+
+
+def build_patient_counts_json(
+    patient_ids: List[str],
+    counts: Dict[str, int],
+) -> Dict[str, int]:
+    return {patient_id: counts.get(patient_id, 0) for patient_id in patient_ids}
+
+
 @dataclass(frozen=True)
 class BatchOutput:
     class_name: str
@@ -226,6 +237,8 @@ def run_stage2(
 
         # Sidecar lists: denovo task -> patients with non-empty inherited; inherited task -> patients with non-empty denovo.
         patients_nonempty_sidecar: set[str] = set()
+        class_dvars_counts: Dict[str, int] = {}
+        class_dvars_inh_counts: Dict[str, int] = {}
 
         for batch_index, batch_patient_ids in enumerate(chunked(patient_ids, batch_size), start=1):
             dVars: Dict[str, List[str]] = {}
@@ -246,8 +259,14 @@ def run_stage2(
                 )
                 if collect_denovo:
                     merge(dVars, dvars)
+                    class_dvars_counts[patient_id] = (
+                        class_dvars_counts.get(patient_id, 0) + count_patient_variant_records(dvars)
+                    )
                 if collect_inherited:
                     merge(dVars_inh, dvars_inh)
+                    class_dvars_inh_counts[patient_id] = (
+                        class_dvars_inh_counts.get(patient_id, 0) + count_patient_variant_records(dvars_inh)
+                    )
                 if collect_inherited and dvars_inh:
                     batch_patients_nonempty_inh.add(patient_id)
                 if collect_denovo and dvars:
@@ -295,6 +314,27 @@ def run_stage2(
         if patients_nonempty_sidecar:
             (class_dir / class_list_name).write_text(
                 "\n".join(sorted(patients_nonempty_sidecar)) + "\n",
+                encoding="utf-8",
+            )
+
+        if collect_denovo:
+            dvars_counts_path = class_dir / "patient_dVars_counts.json"
+            dvars_counts_path.write_text(
+                json.dumps(
+                    build_patient_counts_json(patient_ids, class_dvars_counts),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        if collect_inherited:
+            dvars_inh_counts_path = class_dir / "patient_dVars_inh_counts.json"
+            dvars_inh_counts_path.write_text(
+                json.dumps(
+                    build_patient_counts_json(patient_ids, class_dvars_inh_counts),
+                    indent=2,
+                    sort_keys=True,
+                ),
                 encoding="utf-8",
             )
 
