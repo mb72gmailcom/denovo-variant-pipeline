@@ -112,7 +112,7 @@ Batch outputs (depends on `--task` and save flags):
 - `class_<name>/patient_dVars_counts.json` (variant records per patient for the class, written once after all batches)
 - `class_<name>/patient_dVars_inh_counts.json` (when inherited variants are collected)
 
-Optional histograms (`--stage2-hist`, active `--task` bucket only; AB files omitted if all bins are zero):
+Histograms (default on; use `--stage2-nohist` to skip; active `--task` bucket only; AB files omitted if all bins are zero):
 
 - `children_qt_hist.json`, `parents_qt_hist.json`, `children_dp_hist.json`, `parents_dp_hist.json` (all genotypes pooled)
 - `children_00_ab_hist.json`, `parents_00_ab_hist.json`, `children_01_ab_hist.json`, `parents_01_ab_hist.json`, `children_11_ab_hist.json`, `parents_11_ab_hist.json` (AB = `ada/(adr+ada)`)

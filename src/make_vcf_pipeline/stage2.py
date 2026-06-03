@@ -387,7 +387,7 @@ def run_stage2(
     save_inh: bool = False,
     save_denovo: bool = False,
     use_ext_denovo: bool = False,
-    write_hist: bool = False,
+    write_hist: bool = True,
 ) -> Stage2Result:
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")

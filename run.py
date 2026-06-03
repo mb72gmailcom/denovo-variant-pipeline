@@ -132,9 +132,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
     )
     parser.add_argument(
-        "--stage2-hist",
+        "--stage2-nohist",
         action="store_true",
-        help="Stage2: write qt/dp/ab histogram JSON files per class (active --task only).",
+        help="Stage2: skip qt/dp/ab histogram JSON files (computed by default per class).",
     )
 
     # Stage 3 parameters
@@ -230,7 +230,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=args.stage2_hist,
+            write_hist=not args.stage2_nohist,
         )
         print(f"[stage2] done -> {len(stage2_result.outputs)} batch outputs in {stage2_out_dir}")
         print_stage2_summary(stage2_result, task=args.task)

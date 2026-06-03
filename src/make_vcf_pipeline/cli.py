@@ -46,9 +46,9 @@ def _split_csv(value: str) -> List[str]:
 
 def _add_stage2_hist_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--stage2-hist",
+        "--stage2-nohist",
         action="store_true",
-        help="Stage2: write qt/dp/ab histogram JSON files under each class_<name>/ (active --task only).",
+        help="Stage2: skip qt/dp/ab histogram JSON files (computed by default per class_<name>/).",
     )
 
 
@@ -386,7 +386,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=args.stage2_hist,
+            write_hist=not args.stage2_nohist,
         )
         print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
         print_stage2_summary(stage2_result, task=args.task)
@@ -418,7 +418,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=args.stage2_hist,
+            write_hist=not args.stage2_nohist,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")
         print_stage1_summary(stage1_result)
@@ -478,7 +478,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=args.stage2_hist,
+            write_hist=not args.stage2_nohist,
         )
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)
