@@ -3,10 +3,15 @@ from __future__ import annotations
 import gzip
 import json
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Tuple
+
+HIST_BIN_COUNT = 100
+AB_GT_KEYS = ("00", "01", "11")
+GT_TO_AB_KEY = {"0/0": "00", "0/1": "01", "1/1": "11"}
+AB_KEY_TO_GT = {"00": "0/0", "01": "0/1", "11": "1/1"}
 
 
 def get_details(pp: str) -> Tuple[str, int, int, int, int]:
@@ -63,6 +68,143 @@ def if_denovo(chl: int, mot: int, fat: int) -> bool:
     return chl > 0 and mot == 0 and fat == 0
 
 
+def _empty_hist_bins() -> List[int]:
+    return [0] * HIST_BIN_COUNT
+
+
+def _bin_integer_metric(value: int, counts: List[int]) -> None:
+    if value < 1:
+        return
+    if value >= 100:
+        counts[99] += 1
+    else:
+        counts[value - 1] += 1
+
+
+def _bin_ab_ratio(adr: int, ada: int, counts: List[int]) -> None:
+    denom = adr + ada
+    if denom <= 0:
+        return
+    ab = adr / denom
+    if ab >= 0.99:
+        counts[99] += 1
+    elif ab >= 0:
+        counts[int(ab / 0.01)] += 1
+
+
+@dataclass
+class Stage2HistCollector:
+    """Per-class histograms for variants in the active stage2 task bucket."""
+
+    children_qt: List[int] = field(default_factory=_empty_hist_bins)
+    parents_qt: List[int] = field(default_factory=_empty_hist_bins)
+    children_dp: List[int] = field(default_factory=_empty_hist_bins)
+    parents_dp: List[int] = field(default_factory=_empty_hist_bins)
+    children_ab: Dict[str, List[int]] = field(
+        default_factory=lambda: {key: _empty_hist_bins() for key in AB_GT_KEYS}
+    )
+    parents_ab: Dict[str, List[int]] = field(
+        default_factory=lambda: {key: _empty_hist_bins() for key in AB_GT_KEYS}
+    )
+
+    def record_parent(self, gt: str, gq: int, dp: int, adr: int, ada: int) -> None:
+        _bin_integer_metric(gq, self.parents_qt)
+        _bin_integer_metric(dp, self.parents_dp)
+        ab_key = GT_TO_AB_KEY.get(gt)
+        if ab_key is not None:
+            _bin_ab_ratio(adr, ada, self.parents_ab[ab_key])
+
+    def record_child(self, gt: str, gq: int, dp: int, adr: int, ada: int) -> None:
+        _bin_integer_metric(gq, self.children_qt)
+        _bin_integer_metric(dp, self.children_dp)
+        ab_key = GT_TO_AB_KEY.get(gt)
+        if ab_key is not None:
+            _bin_ab_ratio(adr, ada, self.children_ab[ab_key])
+
+    def write_json_files(self, class_dir: Path, task: str) -> List[Path]:
+        written: List[Path] = []
+        specs = [
+            ("children_qt_hist.json", "children", "qt", None, self.children_qt),
+            ("parents_qt_hist.json", "parents", "qt", None, self.parents_qt),
+            ("children_dp_hist.json", "children", "dp", None, self.children_dp),
+            ("parents_dp_hist.json", "parents", "dp", None, self.parents_dp),
+        ]
+        for filename, role, metric, genotype, counts in specs:
+            if sum(counts) == 0:
+                continue
+            path = class_dir / filename
+            path.write_text(
+                json.dumps(
+                    _hist_payload(task, role, metric, genotype, counts, integer=True),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            written.append(path)
+
+        for ab_suffix in AB_GT_KEYS:
+            for role, ab_map in (("children", self.children_ab), ("parents", self.parents_ab)):
+                counts = ab_map[ab_suffix]
+                if sum(counts) == 0:
+                    continue
+                filename = f"{role}_{ab_suffix}_ab_hist.json"
+                path = class_dir / filename
+                path.write_text(
+                    json.dumps(
+                        _hist_payload(
+                            task,
+                            role,
+                            "ab",
+                            ab_suffix,
+                            counts,
+                            integer=False,
+                        ),
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                written.append(path)
+        return written
+
+
+def _hist_payload(
+    task: str,
+    role: str,
+    metric: str,
+    genotype: str | None,
+    counts: List[int],
+    *,
+    integer: bool,
+) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "schema": "stage2_hist_v1",
+        "task": task,
+        "role": role,
+        "metric": metric,
+        "counts": counts,
+    }
+    if genotype is not None:
+        payload["genotype"] = AB_KEY_TO_GT[genotype]
+    if integer:
+        payload["bin_spec"] = {
+            "type": "integer",
+            "buckets": HIST_BIN_COUNT,
+            "labels": "1..99 map to index 0..98; index 99 is >=100",
+        }
+    else:
+        payload["bin_spec"] = {
+            "type": "ab_ratio",
+            "buckets": HIST_BIN_COUNT,
+            "width": 0.01,
+            "last_bin": "[0.99, 1.0]",
+            "other_bins": "[k*0.01, (k+1)*0.01) for k=0..98",
+            "ab_formula": "adr/(adr+ada)",
+        }
+    return payload
+
+
 def if_denovo_ext(child: int, mother: int, father: int) -> bool:
     if child == 0 and (mother == 2 or father == 2):
         return True
@@ -79,6 +221,9 @@ def get_vars(
     collect_denovo: bool = True,
     collect_inherited: bool = True,
     use_ext_denovo: bool = False,
+    hist: Stage2HistCollector | None = None,
+    record_hist_denovo: bool = False,
+    record_hist_inherited: bool = False,
 ) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
     dvars_inh: Dict[str, List[str]] = {}
     dvars: Dict[str, List[str]] = {}
@@ -119,9 +264,17 @@ def get_vars(
                 if is_denovo:
                     if collect_denovo:
                         update(dvars, kk, gtex)
+                        if hist is not None and record_hist_denovo:
+                            hist.record_parent(mt, mt_gq, mt_dp, mt_adr, mt_ada)
+                            hist.record_parent(ft, ft_gq, ft_dp, ft_adr, ft_ada)
+                            hist.record_child(ch, ch_gq, ch_dp, ch_adr, ch_ada)
                 else:
                     if collect_inherited:
                         update(dvars_inh, kk, gtex)
+                        if hist is not None and record_hist_inherited:
+                            hist.record_parent(mt, mt_gq, mt_dp, mt_adr, mt_ada)
+                            hist.record_parent(ft, ft_gq, ft_dp, ft_adr, ft_ada)
+                            hist.record_child(ch, ch_gq, ch_dp, ch_adr, ch_ada)
             except Exception:
                 continue
     return dvars, dvars_inh
@@ -203,6 +356,7 @@ def run_stage2(
     save_inh: bool = False,
     save_denovo: bool = False,
     use_ext_denovo: bool = False,
+    write_hist: bool = False,
 ) -> List[BatchOutput]:
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")
@@ -239,6 +393,9 @@ def run_stage2(
         patients_nonempty_sidecar: set[str] = set()
         class_dvars_counts: Dict[str, int] = {}
         class_dvars_inh_counts: Dict[str, int] = {}
+        hist_collector = Stage2HistCollector() if write_hist else None
+        record_hist_denovo = write_hist and task == "denovo"
+        record_hist_inherited = write_hist and task == "inherited"
 
         for batch_index, batch_patient_ids in enumerate(chunked(patient_ids, batch_size), start=1):
             dVars: Dict[str, List[str]] = {}
@@ -256,6 +413,9 @@ def run_stage2(
                     collect_denovo=collect_denovo,
                     collect_inherited=collect_inherited,
                     use_ext_denovo=use_ext_denovo,
+                    hist=hist_collector,
+                    record_hist_denovo=record_hist_denovo,
+                    record_hist_inherited=record_hist_inherited,
                 )
                 if collect_denovo:
                     merge(dVars, dvars)
@@ -337,5 +497,8 @@ def run_stage2(
                 ),
                 encoding="utf-8",
             )
+
+        if hist_collector is not None:
+            hist_collector.write_json_files(class_dir, task=task)
 
     return outputs

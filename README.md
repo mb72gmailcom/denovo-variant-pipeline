@@ -112,6 +112,11 @@ Batch outputs (depends on `--task` and save flags):
 - `class_<name>/patient_dVars_counts.json` (variant records per patient for the class, written once after all batches)
 - `class_<name>/patient_dVars_inh_counts.json` (when inherited variants are collected)
 
+Optional histograms (`--stage2-hist`, active `--task` bucket only; AB files omitted if all bins are zero):
+
+- `children_qt_hist.json`, `parents_qt_hist.json`, `children_dp_hist.json`, `parents_dp_hist.json` (all genotypes pooled)
+- `children_00_ab_hist.json`, `parents_00_ab_hist.json`, `children_01_ab_hist.json`, `parents_01_ab_hist.json`, `children_11_ab_hist.json`, `parents_11_ab_hist.json` (AB = `adr/(adr+ada)`)
+
 Optional patient-ID sidecar lists (only written when that batch or class has at least one ID):
 
 - `--task denovo` (default): `batch_*_patients_nonempty_dvars_inh.txt` per batch (if non-empty), and `patients_nonempty_dvars_inh.txt` for the class (if non-empty).

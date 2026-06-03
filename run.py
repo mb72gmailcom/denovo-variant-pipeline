@@ -128,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
     )
+    parser.add_argument(
+        "--stage2-hist",
+        action="store_true",
+        help="Stage2: write qt/dp/ab histogram JSON files per class (active --task only).",
+    )
 
     # Stage 3 parameters
     parser.add_argument(
@@ -221,6 +226,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
+            write_hist=args.stage2_hist,
         )
         print(f"[stage2] done -> {len(stage2_outputs)} batch outputs in {stage2_out_dir}")
 

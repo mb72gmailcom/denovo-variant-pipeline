@@ -41,6 +41,14 @@ def _split_csv(value: str) -> List[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _add_stage2_hist_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--stage2-hist",
+        action="store_true",
+        help="Stage2: write qt/dp/ab histogram JSON files under each class_<name>/ (active --task only).",
+    )
+
+
 def _add_stage3_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--filter",
@@ -194,6 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
     )
     _add_cap_args(p2)
+    _add_stage2_hist_args(p2)
 
     p12 = subparsers.add_parser("run12", help="Run stage1 then stage2")
     p12.add_argument("--input-dir", type=Path, required=True)
@@ -229,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run12 stage2: use extended denovo definition (if_denovo_ext).",
     )
     _add_cap_args(p12)
+    _add_stage2_hist_args(p12)
 
     p3 = subparsers.add_parser("stage3", help="Post-process stage2 outputs into chromosome files")
     p3.add_argument(
@@ -307,6 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run123 stage2: use extended denovo definition (if_denovo_ext).",
     )
     _add_cap_args(p123)
+    _add_stage2_hist_args(p123)
     _add_stage3_filter_args(p123)
     return parser
 
@@ -371,6 +382,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
+            write_hist=args.stage2_hist,
         )
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
         return
@@ -401,6 +413,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
+            write_hist=args.stage2_hist,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")
         print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
@@ -457,6 +470,7 @@ def main() -> None:
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
+            write_hist=args.stage2_hist,
         )
         class_to_cap = parse_class_cap_pairs(args.class_cap)
         requested = parse_classes_to_process(args.classes_to_process)

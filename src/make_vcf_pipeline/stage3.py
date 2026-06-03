@@ -222,7 +222,7 @@ def is_good(
     denom = adr + ada
     if denom <= 0:
         return False
-    ab = adr / denom
+    ab = ada / denom
 
     if qt < qt_cap or dp < dp_cap:
         return False
