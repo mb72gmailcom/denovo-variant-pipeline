@@ -367,6 +367,11 @@ def parse_snv_key(key: str) -> tuple[str, str, str] | None:
     return chrom, ref.upper(), alt.upper()
 
 
+def count_snv_variant_keys(dvars: VarsMap) -> int:
+    """Count variant keys with single-base ref and alt (same rule as VCF / Ti-Tv)."""
+    return sum(1 for key in dvars if parse_snv_key(key) is not None)
+
+
 def is_transition(ref: str, alt: str) -> bool:
     return (ref.upper(), alt.upper()) in TRANSITION_PAIRS
 
@@ -423,7 +428,7 @@ def compute_titv_summary(dchr_sorted: Dict[str, List[str]]) -> Dict[str, object]
 @dataclass(frozen=True)
 class Stage3ClassSummary:
     class_name: str
-    variants_left: int
+    snv_variants_left: int
     transitions: int
     transversions: int
     titv_ratio: float | None
@@ -442,7 +447,7 @@ def print_stage3_summary(result: Stage3Result, *, task: str) -> None:
     for row in result.class_summaries:
         titv_display = "n/a" if row.titv_ratio is None else f"{row.titv_ratio:.6f}"
         print(
-            f"  {row.class_name}: variants_left={row.variants_left} "
+            f"  {row.class_name}: snv_variants_left={row.snv_variants_left} "
             f"Ti/Tv={titv_display} (Ti={row.transitions} Tv={row.transversions})"
         )
 
@@ -481,11 +486,11 @@ def run_stage3(
         dchr_class_sorted = sort_chromosome_keys(dchr_class)
         titv_class = compute_titv_summary(dchr_class_sorted)
         overall = titv_class["overall"]
-        variants_left = sum(len(keys) for keys in dchr_class_sorted.values())
+        snv_variants_left = count_snv_variant_keys(dvars_filtered)
         class_summaries.append(
             Stage3ClassSummary(
                 class_name=class_name,
-                variants_left=variants_left,
+                snv_variants_left=snv_variants_left,
                 transitions=int(overall["transitions"]),
                 transversions=int(overall["transversions"]),
                 titv_ratio=overall["titv_ratio"],
