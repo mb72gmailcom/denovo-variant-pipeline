@@ -115,7 +115,7 @@ Batch outputs (depends on `--task` and save flags):
 Optional histograms (`--stage2-hist`, active `--task` bucket only; AB files omitted if all bins are zero):
 
 - `children_qt_hist.json`, `parents_qt_hist.json`, `children_dp_hist.json`, `parents_dp_hist.json` (all genotypes pooled)
-- `children_00_ab_hist.json`, `parents_00_ab_hist.json`, `children_01_ab_hist.json`, `parents_01_ab_hist.json`, `children_11_ab_hist.json`, `parents_11_ab_hist.json` (AB = `adr/(adr+ada)`)
+- `children_00_ab_hist.json`, `parents_00_ab_hist.json`, `children_01_ab_hist.json`, `parents_01_ab_hist.json`, `children_11_ab_hist.json`, `parents_11_ab_hist.json` (AB = `ada/(adr+ada)`)
 
 Optional patient-ID sidecar lists (only written when that batch or class has at least one ID):
 

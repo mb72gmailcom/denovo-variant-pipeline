@@ -85,7 +85,7 @@ def _bin_ab_ratio(adr: int, ada: int, counts: List[int]) -> None:
     denom = adr + ada
     if denom <= 0:
         return
-    ab = adr / denom
+    ab = ada / denom
     if ab >= 0.99:
         counts[99] += 1
     elif ab >= 0:
@@ -200,7 +200,7 @@ def _hist_payload(
             "width": 0.01,
             "last_bin": "[0.99, 1.0]",
             "other_bins": "[k*0.01, (k+1)*0.01) for k=0..98",
-            "ab_formula": "adr/(adr+ada)",
+            "ab_formula": "ada/(adr+ada)",
         }
     return payload
 

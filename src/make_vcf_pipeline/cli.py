@@ -75,7 +75,7 @@ def _add_stage3_filter_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=DEFAULT_FILTER_AB_HOM0,
         metavar="AB_CAP",
-        help=f"Stage3 with --filter: 0/0 ref fraction ab=adr/(adr+ada) must be < this (default {DEFAULT_FILTER_AB_HOM0}).",
+        help=f"Stage3 with --filter: 0/0 alt fraction ab=ada/(adr+ada) must be < this (default {DEFAULT_FILTER_AB_HOM0}).",
     )
     parser.add_argument(
         "--filter-abHom1",
