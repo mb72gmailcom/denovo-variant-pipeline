@@ -132,8 +132,10 @@ Denovo classification (stage 2):
 Use class map from stage 1 and stage 2 batch outputs.  
 `--output-dir` is the **pipeline root**; results go under a stage3 directory chosen by `--task` and optional `--classes-to-process`:
 
-- **`--task denovo` (default):** merge `batch_*_dVars.pkl` → `<output-dir>/stage3/` or `<output-dir>/stage3_<classes>/`
-- **`--task inherited`:** merge `batch_*_dVars_inh.pkl` → `<output-dir>/stage3_inherited/` or `<output-dir>/stage3_inherited_<classes>/`
+- **`--task denovo` (default):** merge `batch_*_dVars.pkl` → `<output-dir>/stage3_vN/` or `<output-dir>/stage3_<classes>_vN/`
+- **`--task inherited`:** merge `batch_*_dVars_inh.pkl` → `<output-dir>/stage3_inherited_vN/` or `<output-dir>/stage3_inherited_<classes>_vN/`
+
+Each stage3 run uses the next monotonic version `N` for that stem (e.g. `stage3_v0`, then `stage3_v1`; deleted intermediate versions are not reused). Run parameters (including filter caps) are recorded in `stage3_summary.json`.
 
 `--class-map-json` defaults to `<output-dir>/stage1/stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json`.  
 `--stage2-dir` defaults to `<output-dir>/stage2`.  
@@ -159,7 +161,7 @@ make-vcf stage3 \
   --task inherited
 ```
 
-Process only some classes (e.g. `/data/out/stage3_SSC_ABC/` with `--task denovo`, or `/data/out/stage3_inherited_SSC_ABC/` with `--task inherited`):
+Process only some classes (e.g. `/data/out/stage3_SSC_ABC_v0/` with `--task denovo`, or `/data/out/stage3_inherited_SSC_ABC_v0/` with `--task inherited`):
 
 ```bash
 make-vcf stage3 \
@@ -174,9 +176,24 @@ You can also provide caps as one comma-separated list:
 --class-cap SSC=80,ABC=120
 ```
 
+Optional genotype QC (`--filter`): runs **after** per-patient denovo cap, on full triplet records from stage2. Mother, father, and child must all pass `is_good`. Thresholds are recorded in `stage3_summary.json`.
+
+Defaults when `--filter` is set: `--filter-dp 20`, `--filter-qt 90`, `--filter-abHom0 0.05`, `--filter-abHom1 0.05`, `--filter-abHet 0.30`. Depth and quality pass when `dp >= dp_cap` and `qt >= qt_cap`.
+
+```bash
+make-vcf stage3 \
+  --output-dir /data/out \
+  --denovo-cap 100 \
+  --filter
+```
+
+Override any threshold explicitly, e.g. `--filter-dp 15 --filter-abHet 0.25`.
+
+Without `--filter`, stage3 behavior is unchanged (cap only).
+
 Outputs (under the chosen stage3 directory):
 - `chr1/variants_snv_nohead.vcf` (and `chr2` ... `chr22`, `chrX`)
-- `stage3_summary.json`
+- `stage3_summary.json` (includes `filter_enabled` and `filter_caps` when `--filter` is used)
 - `stage3_titv.json` (transitions, transversions, and Ti/Tv ratio per chromosome and overall)
 
 ## Run all stages
@@ -193,7 +210,7 @@ make-vcf run123 \
   --class-cap SSC=80
 ```
 
-Optional: restrict stage 3 to a subset of classes (writes `/data/out/stage3_SSC_ABC/`). Add to the `run123` command:
+Optional: restrict stage 3 to a subset of classes (writes `/data/out/stage3_SSC_ABC_v0/`, etc.). Add to the `run123` command:
 
 ```bash
 --classes-to-process SSC,ABC

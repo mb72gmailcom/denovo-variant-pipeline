@@ -21,13 +21,70 @@ from .stage2 import (
     parse_classes_to_process as parse_stage2_classes_to_process,
     run_stage2,
 )
-from .stage3 import parse_class_cap_pairs, parse_classes_to_process, resolve_stage3_output, run_stage3
+from .stage3 import (
+    DEFAULT_FILTER_AB_HET,
+    DEFAULT_FILTER_AB_HOM0,
+    DEFAULT_FILTER_AB_HOM1,
+    DEFAULT_FILTER_DP,
+    DEFAULT_FILTER_QT,
+    filter_caps_from_args,
+    parse_class_cap_pairs,
+    parse_classes_to_process,
+    resolve_stage3_output,
+    run_stage3,
+)
 
 
 def _split_csv(value: str) -> List[str]:
     if not value.strip():
         return []
     return [x.strip() for x in value.split(",") if x.strip()]
+
+
+def _add_stage3_filter_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--filter",
+        action="store_true",
+        help="Stage3: after per-patient cap, apply is_good QC on mother, father, and child.",
+    )
+    parser.add_argument(
+        "--filter-dp",
+        type=int,
+        default=DEFAULT_FILTER_DP,
+        metavar="DP_CAP",
+        help=f"Stage3 with --filter: minimum depth (keep if dp >= dp_cap; default {DEFAULT_FILTER_DP}).",
+    )
+    parser.add_argument(
+        "--filter-qt",
+        type=int,
+        default=DEFAULT_FILTER_QT,
+        metavar="QT_CAP",
+        help=f"Stage3 with --filter: minimum genotype quality (keep if qt >= qt_cap; default {DEFAULT_FILTER_QT}).",
+    )
+    parser.add_argument(
+        "--filter-abHom0",
+        dest="filter_ab_hom0",
+        type=float,
+        default=DEFAULT_FILTER_AB_HOM0,
+        metavar="AB_CAP",
+        help=f"Stage3 with --filter: 0/0 ref fraction ab=adr/(adr+ada) must be < this (default {DEFAULT_FILTER_AB_HOM0}).",
+    )
+    parser.add_argument(
+        "--filter-abHom1",
+        dest="filter_ab_hom1",
+        type=float,
+        default=DEFAULT_FILTER_AB_HOM1,
+        metavar="AB_CAP",
+        help=f"Stage3 with --filter: 1/1 must have ab > 1 - ab_capHom1 (default {DEFAULT_FILTER_AB_HOM1}).",
+    )
+    parser.add_argument(
+        "--filter-abHet",
+        dest="filter_ab_het",
+        type=float,
+        default=DEFAULT_FILTER_AB_HET,
+        metavar="AB_CAP",
+        help=f"Stage3 with --filter: 0/1 must have ab_capHet < ab < 1 - ab_capHet (default {DEFAULT_FILTER_AB_HET}).",
+    )
 
 
 def _add_cap_args(parser: argparse.ArgumentParser) -> None:
@@ -184,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         required=True,
-        help="Pipeline output root; stage3 writes under stage3/ or stage3_<classes>/ (denovo), or stage3_inherited/... (inherited).",
+        help="Pipeline output root; stage3 writes under stage3_vN/ or stage3_<classes>_vN/ (denovo), or stage3_inherited_vN/...",
     )
     p3.add_argument("--class-map-json", type=Path, default=None)
     p3.add_argument(
@@ -209,9 +266,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--task",
         choices=("denovo", "inherited"),
         default="denovo",
-        help="denovo: merge batch dVars. inherited: merge batch dVars_inh; output under stage3_inherited/...",
+        help="denovo: merge batch dVars. inherited: merge batch dVars_inh; output under stage3_inherited_vN/...",
     )
     _add_cap_args(p3)
+    _add_stage3_filter_args(p3)
 
     p123 = subparsers.add_parser("run123", help="Run stage1, stage2, then stage3")
     p123.add_argument("--input-dir", type=Path, required=True)
@@ -249,7 +307,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run123 stage2: use extended denovo definition (if_denovo_ext).",
     )
     _add_cap_args(p123)
+    _add_stage3_filter_args(p123)
     return parser
+
+
+def _stage3_filter_caps(args: argparse.Namespace):
+    return filter_caps_from_args(
+        filter_enabled=args.filter,
+        filter_dp=args.filter_dp,
+        filter_qt=args.filter_qt,
+        filter_ab_hom0=args.filter_ab_hom0,
+        filter_ab_hom1=args.filter_ab_hom1,
+        filter_ab_het=args.filter_ab_het,
+    )
 
 
 def main() -> None:
@@ -354,6 +424,7 @@ def main() -> None:
             class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
+            filter_caps=_stage3_filter_caps(args),
             task=args.task,
         )
         print(json.dumps(result.__dict__, indent=2, default=str))
@@ -398,6 +469,7 @@ def main() -> None:
             class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
+            filter_caps=_stage3_filter_caps(args),
             task=args.task,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")

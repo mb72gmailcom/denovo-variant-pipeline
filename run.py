@@ -27,6 +27,12 @@ from make_vcf_pipeline.stage2 import (
     run_stage2,
 )
 from make_vcf_pipeline.stage3 import (
+    DEFAULT_FILTER_AB_HET,
+    DEFAULT_FILTER_AB_HOM0,
+    DEFAULT_FILTER_AB_HOM1,
+    DEFAULT_FILTER_DP,
+    DEFAULT_FILTER_QT,
+    filter_caps_from_args,
     parse_class_cap_pairs,
     parse_classes_to_process,
     resolve_stage3_output,
@@ -142,6 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Stage2/Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
     )
+    parser.add_argument(
+        "--filter",
+        action="store_true",
+        help="Stage3: after per-patient cap, apply is_good QC on mother, father, and child.",
+    )
+    parser.add_argument("--filter-dp", type=int, default=DEFAULT_FILTER_DP, metavar="DP_CAP")
+    parser.add_argument("--filter-qt", type=int, default=DEFAULT_FILTER_QT, metavar="QT_CAP")
+    parser.add_argument(
+        "--filter-abHom0", dest="filter_ab_hom0", type=float, default=DEFAULT_FILTER_AB_HOM0, metavar="AB_CAP"
+    )
+    parser.add_argument(
+        "--filter-abHom1", dest="filter_ab_hom1", type=float, default=DEFAULT_FILTER_AB_HOM1, metavar="AB_CAP"
+    )
+    parser.add_argument(
+        "--filter-abHet", dest="filter_ab_het", type=float, default=DEFAULT_FILTER_AB_HET, metavar="AB_CAP"
+    )
     return parser
 
 
@@ -219,6 +241,14 @@ def main() -> None:
             class_map=class_map_run,
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
+            filter_caps=filter_caps_from_args(
+                filter_enabled=args.filter,
+                filter_dp=args.filter_dp,
+                filter_qt=args.filter_qt,
+                filter_ab_hom0=args.filter_ab_hom0,
+                filter_ab_hom1=args.filter_ab_hom1,
+                filter_ab_het=args.filter_ab_het,
+            ),
             task=args.task,
         )
         print(f"[stage3] done -> {stage3_result.output_dir}")

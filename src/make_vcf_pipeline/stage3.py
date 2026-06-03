@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List
@@ -14,6 +15,12 @@ FilterFn = Callable[[VarsMap, int], VarsMap]
 
 TRANSITION_PAIRS = frozenset({("A", "G"), ("G", "A"), ("T", "C"), ("C", "T")})
 STAGE3_CHROMOSOMES = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
+
+DEFAULT_FILTER_DP = 20
+DEFAULT_FILTER_QT = 90
+DEFAULT_FILTER_AB_HOM0 = 0.05
+DEFAULT_FILTER_AB_HOM1 = 0.05
+DEFAULT_FILTER_AB_HET = 0.30
 
 
 def parse_classes_to_process(entries: List[str]) -> List[str]:
@@ -29,28 +36,19 @@ def parse_classes_to_process(entries: List[str]) -> List[str]:
     return out
 
 
-def resolve_stage3_output(
-    output_root: Path,
+def resolve_stage3_stem(
     class_map: Dict[str, List[str]],
     classes_to_process: List[str],
     task: str = "denovo",
-) -> tuple[Dict[str, List[str]], Path]:
-    """
-    Choose which classes to include and the output directory under output_root.
-
-    - ``task=denovo`` -> ``stage3`` / ``stage3_<classes>`` (de novo variants from dVars).
-    - ``task=inherited`` -> ``stage3_inherited`` / ``stage3_inherited_<classes>`` (from dVars_inh).
-
-    If classes_to_process is empty or lists every class, the short form (``stage3`` or
-    ``stage3_inherited``) is used; otherwise class names are appended sorted.
-    """
+) -> str:
+    """Base directory name before ``_vN`` (e.g. ``stage3``, ``stage3_SSC_ABC``)."""
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")
 
     base = "stage3" if task == "denovo" else "stage3_inherited"
 
     if not classes_to_process:
-        return dict(class_map), output_root / base
+        return base
 
     missing = [c for c in classes_to_process if c not in class_map]
     if missing:
@@ -58,15 +56,64 @@ def resolve_stage3_output(
             f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
         )
 
-    filtered = {k: class_map[k] for k in classes_to_process}
-    full_keys = set(class_map.keys())
     selected_keys = set(classes_to_process)
-
-    if selected_keys == full_keys:
-        return filtered, output_root / base
+    if selected_keys == set(class_map.keys()):
+        return base
 
     tag = "_".join(sorted(selected_keys))
-    return filtered, output_root / f"{base}_{tag}"
+    return f"{base}_{tag}"
+
+
+def allocate_monotonic_versioned_dir(output_root: Path, stem: str) -> tuple[Path, int]:
+    """
+    Pick ``{stem}_v{N}`` where N is one greater than the highest existing version (no gap fill).
+    """
+    pattern = re.compile(rf"^{re.escape(stem)}_v(\d+)$")
+    max_version = -1
+    if output_root.is_dir():
+        for child in output_root.iterdir():
+            if not child.is_dir():
+                continue
+            match = pattern.match(child.name)
+            if match:
+                max_version = max(max_version, int(match.group(1)))
+
+    version = max_version + 1
+    return output_root / f"{stem}_v{version}", version
+
+
+def parse_versioned_dir_name(dir_name: str) -> tuple[str, int]:
+    stem, sep, version_text = dir_name.rpartition("_v")
+    if sep and version_text.isdigit():
+        return stem, int(version_text)
+    return dir_name, 0
+
+
+def resolve_stage3_output(
+    output_root: Path,
+    class_map: Dict[str, List[str]],
+    classes_to_process: List[str],
+    task: str = "denovo",
+) -> tuple[Dict[str, List[str]], Path]:
+    """
+    Choose classes and a versioned output directory under output_root.
+
+    Stems: ``stage3``, ``stage3_inherited``, ``stage3_<classes>``, ``stage3_inherited_<classes>``.
+    Each run writes to ``{stem}_vN`` with N = max(existing N) + 1 (monotonic; gaps are not reused).
+    """
+    if not classes_to_process:
+        class_map_run = dict(class_map)
+    else:
+        missing = [c for c in classes_to_process if c not in class_map]
+        if missing:
+            raise ValueError(
+                f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
+            )
+        class_map_run = {k: class_map[k] for k in classes_to_process}
+
+    stem = resolve_stage3_stem(class_map, classes_to_process, task=task)
+    output_dir, _version = allocate_monotonic_versioned_dir(output_root, stem)
+    return class_map_run, output_dir
 
 
 def parse_class_cap_pairs(pairs: List[str]) -> Dict[str, int]:
@@ -125,22 +172,132 @@ def denovo_counts_by_patient(dvars: VarsMap) -> Dict[str, int]:
     return counts
 
 
-def filter_by_patient_denovo_cap(dvars: VarsMap, denovo_cap: int) -> VarsMap:
+@dataclass(frozen=True)
+class FilterCaps:
+    dp_cap: int
+    qt_cap: int
+    ab_cap_hom0: float
+    ab_cap_hom1: float
+    ab_cap_het: float
+
+
+def filter_caps_from_args(
+    *,
+    filter_enabled: bool,
+    filter_dp: int | None,
+    filter_qt: int | None,
+    filter_ab_hom0: float | None,
+    filter_ab_hom1: float | None,
+    filter_ab_het: float | None,
+) -> FilterCaps | None:
+    if not filter_enabled:
+        return None
+
+    return FilterCaps(
+        dp_cap=filter_dp if filter_dp is not None else DEFAULT_FILTER_DP,
+        qt_cap=filter_qt if filter_qt is not None else DEFAULT_FILTER_QT,
+        ab_cap_hom0=filter_ab_hom0 if filter_ab_hom0 is not None else DEFAULT_FILTER_AB_HOM0,
+        ab_cap_hom1=filter_ab_hom1 if filter_ab_hom1 is not None else DEFAULT_FILTER_AB_HOM1,
+        ab_cap_het=filter_ab_het if filter_ab_het is not None else DEFAULT_FILTER_AB_HET,
+    )
+
+
+def is_good(
+    gt: str,
+    gex: str,
+    dp_cap: int,
+    qt_cap: int,
+    ab_cap_hom0: float,
+    ab_cap_hom1: float,
+    ab_cap_het: float,
+) -> bool:
+    parts = gex.split(":")
+    if len(parts) != 4:
+        return False
+    try:
+        qt, dp, adr, ada = (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+    except ValueError:
+        return False
+
+    denom = adr + ada
+    if denom <= 0:
+        return False
+    ab = adr / denom
+
+    if qt < qt_cap or dp < dp_cap:
+        return False
+
+    if gt == "0/0" and ab < ab_cap_hom0:
+        return True
+    if gt == "1/1" and ab > 1 - ab_cap_hom1:
+        return True
+    if gt == "0/1" and ab > ab_cap_het and ab < 1 - ab_cap_het:
+        return True
+    return False
+
+
+def _compact_gtex_record(gtex: str) -> str:
+    parts = gtex.split("-", 4)
+    if len(parts) >= 2:
+        return f"{parts[0]}-{parts[1]}"
+    return parts[0] if parts else gtex
+
+
+def passes_triplet_filter(gtex: str, caps: FilterCaps) -> bool:
+    parts = gtex.split("-", 4)
+    if len(parts) != 5:
+        return False
+    _, gt, mex, fex, cex = parts
+    gt_parts = gt.split(":", 2)
+    if len(gt_parts) != 3:
+        return False
+    mt, ft, ch = gt_parts
+    return (
+        is_good(mt, mex, caps.dp_cap, caps.qt_cap, caps.ab_cap_hom0, caps.ab_cap_hom1, caps.ab_cap_het)
+        and is_good(ft, fex, caps.dp_cap, caps.qt_cap, caps.ab_cap_hom0, caps.ab_cap_hom1, caps.ab_cap_het)
+        and is_good(ch, cex, caps.dp_cap, caps.qt_cap, caps.ab_cap_hom0, caps.ab_cap_hom1, caps.ab_cap_het)
+    )
+
+
+def filter_by_patient_denovo_cap(
+    dvars: VarsMap,
+    denovo_cap: int,
+    *,
+    keep_full_gtex: bool = False,
+) -> VarsMap:
     counts = denovo_counts_by_patient(dvars)
     filtered: VarsMap = {}
     for key, values in dvars.items():
         for v in values:
-            vv = v.split("-")
+            vv = v.split("-", 4)
             patient_id = vv[0]
             if counts.get(patient_id, 0) < denovo_cap:
-                # Keep only patient id and genotype tuple, matching your original intent.
-                vs = f"{vv[0]}-{vv[1]}" if len(vv) > 1 else vv[0]
+                vs = v if keep_full_gtex else _compact_gtex_record(v)
                 filtered.setdefault(key, []).append(vs)
     return filtered
 
 
-def apply_filters(dvars: VarsMap, denovo_cap: int, extra_filters: Iterable[FilterFn] | None = None) -> VarsMap:
-    current = filter_by_patient_denovo_cap(dvars, denovo_cap)
+def filter_by_is_good(dvars: VarsMap, caps: FilterCaps) -> VarsMap:
+    filtered: VarsMap = {}
+    for key, values in dvars.items():
+        for v in values:
+            if passes_triplet_filter(v, caps):
+                filtered.setdefault(key, []).append(_compact_gtex_record(v))
+    return filtered
+
+
+def apply_filters(
+    dvars: VarsMap,
+    denovo_cap: int,
+    filter_caps: FilterCaps | None = None,
+    extra_filters: Iterable[FilterFn] | None = None,
+) -> VarsMap:
+    if filter_caps is not None:
+        current = filter_by_patient_denovo_cap(dvars, denovo_cap, keep_full_gtex=True)
+        current = filter_by_is_good(current, filter_caps)
+    else:
+        current = filter_by_patient_denovo_cap(dvars, denovo_cap)
+
     if extra_filters:
         for fn in extra_filters:
             current = fn(current, denovo_cap)
@@ -276,6 +433,7 @@ def run_stage3(
     class_map: Dict[str, List[str]],
     default_cap: int | None,
     class_to_cap: Dict[str, int],
+    filter_caps: FilterCaps | None = None,
     extra_filters: Iterable[FilterFn] | None = None,
     task: str = "denovo",
 ) -> Stage3Result:
@@ -295,7 +453,9 @@ def run_stage3(
             raise ValueError(f"No denovo cap provided for class '{class_name}'")
 
         dvars_combo = load_combo(stage2_dir, class_name)
-        dvars_filtered = apply_filters(dvars_combo, cap, extra_filters=extra_filters)
+        dvars_filtered = apply_filters(
+            dvars_combo, cap, filter_caps=filter_caps, extra_filters=extra_filters
+        )
         merge(dvars_all, dvars_filtered)
         classes_processed += 1
 
@@ -307,19 +467,30 @@ def run_stage3(
     titv_file = output_dir / "stage3_titv.json"
     titv_file.write_text(json.dumps(titv_summary, indent=2, sort_keys=True), encoding="utf-8")
 
+    output_stem, output_version = parse_versioned_dir_name(output_dir.name)
+    summary: Dict[str, object] = {
+        "task": task,
+        "output_dir": output_dir.name,
+        "output_stem": output_stem,
+        "version": output_version,
+        "classes_processed": classes_processed,
+        "classes_included": sorted(class_map.keys()),
+        "variants_kept": len(dvars_all),
+        "chromosome_counts": {chrom: len(keys) for chrom, keys in dchr_sorted.items()},
+        "filter_enabled": filter_caps is not None,
+    }
+    if filter_caps is not None:
+        summary["filter_caps"] = {
+            "dp_cap": filter_caps.dp_cap,
+            "qt_cap": filter_caps.qt_cap,
+            "ab_cap_hom0": filter_caps.ab_cap_hom0,
+            "ab_cap_hom1": filter_caps.ab_cap_hom1,
+            "ab_cap_het": filter_caps.ab_cap_het,
+        }
+
     summary_file = output_dir / "stage3_summary.json"
     summary_file.write_text(
-        json.dumps(
-            {
-                "task": task,
-                "classes_processed": classes_processed,
-                "classes_included": sorted(class_map.keys()),
-                "variants_kept": len(dvars_all),
-                "chromosome_counts": {chrom: len(keys) for chrom, keys in dchr_sorted.items()},
-            },
-            indent=2,
-            sort_keys=True,
-        ),
+        json.dumps(summary, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
