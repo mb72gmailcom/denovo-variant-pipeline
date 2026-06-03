@@ -177,6 +177,7 @@ You can also provide caps as one comma-separated list:
 Outputs (under the chosen stage3 directory):
 - `chr1/variants_snv_nohead.vcf` (and `chr2` ... `chr22`, `chrX`)
 - `stage3_summary.json`
+- `stage3_titv.json` (transitions, transversions, and Ti/Tv ratio per chromosome and overall)
 
 ## Run all stages
 

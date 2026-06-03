@@ -12,6 +12,9 @@ from .stage2 import merge
 VarsMap = Dict[str, List[str]]
 FilterFn = Callable[[VarsMap, int], VarsMap]
 
+TRANSITION_PAIRS = frozenset({("A", "G"), ("G", "A"), ("T", "C"), ("C", "T")})
+STAGE3_CHROMOSOMES = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
+
 
 def parse_classes_to_process(entries: List[str]) -> List[str]:
     """Flatten repeatable/comma-separated class names; preserve first-seen order, dedupe."""
@@ -145,8 +148,7 @@ def apply_filters(dvars: VarsMap, denovo_cap: int, extra_filters: Iterable[Filte
 
 
 def split_keys_by_chromosome(dvars: VarsMap) -> Dict[str, List[str]]:
-    chromosomes = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
-    dchr: Dict[str, List[str]] = {chrom: [] for chrom in chromosomes}
+    dchr: Dict[str, List[str]] = {chrom: [] for chrom in STAGE3_CHROMOSOMES}
 
     for key in sorted(dvars.keys()):
         row = key.split("_")
@@ -196,6 +198,71 @@ def write_snv_nohead_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str
                 f.write("\t".join(prev_row) + "\n")
 
 
+def parse_snv_key(key: str) -> tuple[str, str, str] | None:
+    parts = key.split("_")
+    if len(parts) < 4:
+        return None
+    chrom, ref, alt = parts[0], parts[2], parts[3]
+    if chrom not in STAGE3_CHROMOSOMES:
+        return None
+    if len(ref) != 1 or len(alt) != 1:
+        return None
+    return chrom, ref.upper(), alt.upper()
+
+
+def is_transition(ref: str, alt: str) -> bool:
+    return (ref.upper(), alt.upper()) in TRANSITION_PAIRS
+
+
+def titv_counts_for_chromosome(keys: Iterable[str]) -> Dict[str, int | float | None]:
+    transitions = 0
+    transversions = 0
+    for key in keys:
+        parsed = parse_snv_key(key)
+        if parsed is None:
+            continue
+        _, ref, alt = parsed
+        if ref == alt:
+            continue
+        if is_transition(ref, alt):
+            transitions += 1
+        else:
+            transversions += 1
+    snv_sites = transitions + transversions
+    titv_ratio = transitions / transversions if transversions else None
+    return {
+        "transitions": transitions,
+        "transversions": transversions,
+        "snv_sites": snv_sites,
+        "titv_ratio": titv_ratio,
+    }
+
+
+def compute_titv_summary(dchr_sorted: Dict[str, List[str]]) -> Dict[str, object]:
+    by_chromosome: Dict[str, Dict[str, int | float | None]] = {}
+    total_transitions = 0
+    total_transversions = 0
+
+    for chrom in STAGE3_CHROMOSOMES:
+        counts = titv_counts_for_chromosome(dchr_sorted.get(chrom, []))
+        by_chromosome[chrom] = counts
+        total_transitions += int(counts["transitions"])
+        total_transversions += int(counts["transversions"])
+
+    overall_snv_sites = total_transitions + total_transversions
+    overall_titv = total_transitions / total_transversions if total_transversions else None
+
+    return {
+        "by_chromosome": by_chromosome,
+        "overall": {
+            "transitions": total_transitions,
+            "transversions": total_transversions,
+            "snv_sites": overall_snv_sites,
+            "titv_ratio": overall_titv,
+        },
+    }
+
+
 @dataclass(frozen=True)
 class Stage3Result:
     classes_processed: int
@@ -235,6 +302,10 @@ def run_stage3(
     dchr = split_keys_by_chromosome(dvars_all)
     dchr_sorted = sort_chromosome_keys(dchr)
     write_snv_nohead_vcf(dvars_all, output_dir, dchr_sorted)
+
+    titv_summary = compute_titv_summary(dchr_sorted)
+    titv_file = output_dir / "stage3_titv.json"
+    titv_file.write_text(json.dumps(titv_summary, indent=2, sort_keys=True), encoding="utf-8")
 
     summary_file = output_dir / "stage3_summary.json"
     summary_file.write_text(
