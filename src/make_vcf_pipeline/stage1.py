@@ -8,9 +8,17 @@ from typing import Dict, List
 
 
 @dataclass(frozen=True)
+class Stage1ClassSummary:
+    class_name: str
+    missed_files: int
+    processed_patients: int
+
+
+@dataclass(frozen=True)
 class Stage1Result:
     classes_to_patients: Dict[str, List[str]]
     filtered_classes_to_patients: Dict[str, List[str]]
+    class_summaries: List[Stage1ClassSummary]
     output_dir: Path
     output_json: Path
     filtered_output_json: Path
@@ -18,6 +26,15 @@ class Stage1Result:
     mtime_json_paths: Dict[str, Path]
     missed_txt_paths: Dict[str, Path]
     small_txt_paths: Dict[str, Path]
+
+
+def print_stage1_summary(result: Stage1Result) -> None:
+    print("[stage1 summary]")
+    for row in result.class_summaries:
+        print(
+            f"  {row.class_name}: missed_files={row.missed_files} "
+            f"processed_patients={row.processed_patients}"
+        )
 
 
 def classify_patient_ids(input_dir: Path, prefixes: List[str]) -> Dict[str, List[str]]:
@@ -228,15 +245,18 @@ def run_stage1(
     missed_txt_paths: Dict[str, Path] = {}
     small_txt_paths: Dict[str, Path] = {}
     filtered_classes: Dict[str, List[str]] = {}
+    class_summaries: List[Stage1ClassSummary] = []
 
     if suffixes:
         for class_name, patient_ids in classes_to_patients.items():
             sizes_by_suffix: Dict[str, Dict[str, int]] = {}
+            missed_files = 0
             for suffix in suffixes:
                 label = f"{class_name}_{suffix_label(suffix)}"
                 stats_dict, mtime_dict, missed, small, sizes = process_patients_for_suffix(
                     input_dir, patient_ids, suffix, stats, cap_min
                 )
+                missed_files += len(missed)
                 sizes_by_suffix[suffix] = sizes
 
                 stats_path = stage1_dir / f"stage1_stats_{stats}_{label}.json"
@@ -264,10 +284,25 @@ def run_stage1(
             filtered_classes[class_name] = filter_class_by_sizes(
                 patient_ids, sizes_by_suffix, suffixes, cap_min, cap_max
             )
+            class_summaries.append(
+                Stage1ClassSummary(
+                    class_name=class_name,
+                    missed_files=missed_files,
+                    processed_patients=len(filtered_classes[class_name]),
+                )
+            )
     else:
         filtered_classes = {
             class_name: list(patient_ids) for class_name, patient_ids in classes_to_patients.items()
         }
+        for class_name, patient_ids in classes_to_patients.items():
+            class_summaries.append(
+                Stage1ClassSummary(
+                    class_name=class_name,
+                    missed_files=0,
+                    processed_patients=len(patient_ids),
+                )
+            )
 
     filtered_output_json = stage1_dir / filtered_class_map_filename(cap_min, cap_max)
     with filtered_output_json.open("w", encoding="utf-8") as f:
@@ -276,6 +311,7 @@ def run_stage1(
     return Stage1Result(
         classes_to_patients=classes_to_patients,
         filtered_classes_to_patients=filtered_classes,
+        class_summaries=class_summaries,
         output_dir=stage1_dir,
         output_json=output_json,
         filtered_output_json=filtered_output_json,

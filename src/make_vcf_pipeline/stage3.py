@@ -421,10 +421,30 @@ def compute_titv_summary(dchr_sorted: Dict[str, List[str]]) -> Dict[str, object]
 
 
 @dataclass(frozen=True)
+class Stage3ClassSummary:
+    class_name: str
+    variants_left: int
+    transitions: int
+    transversions: int
+    titv_ratio: float | None
+
+
+@dataclass(frozen=True)
 class Stage3Result:
     classes_processed: int
     variants_kept: int
     output_dir: Path
+    class_summaries: List[Stage3ClassSummary]
+
+
+def print_stage3_summary(result: Stage3Result, *, task: str) -> None:
+    print(f"[stage3 summary] task={task}")
+    for row in result.class_summaries:
+        titv_display = "n/a" if row.titv_ratio is None else f"{row.titv_ratio:.6f}"
+        print(
+            f"  {row.class_name}: variants_left={row.variants_left} "
+            f"Ti/Tv={titv_display} (Ti={row.transitions} Tv={row.transversions})"
+        )
 
 
 def run_stage3(
@@ -446,6 +466,7 @@ def run_stage3(
 
     dvars_all: VarsMap = {}
     classes_processed = 0
+    class_summaries: List[Stage3ClassSummary] = []
 
     for class_name in class_map.keys():
         cap = class_to_cap.get(class_name, default_cap)
@@ -455,6 +476,20 @@ def run_stage3(
         dvars_combo = load_combo(stage2_dir, class_name)
         dvars_filtered = apply_filters(
             dvars_combo, cap, filter_caps=filter_caps, extra_filters=extra_filters
+        )
+        dchr_class = split_keys_by_chromosome(dvars_filtered)
+        dchr_class_sorted = sort_chromosome_keys(dchr_class)
+        titv_class = compute_titv_summary(dchr_class_sorted)
+        overall = titv_class["overall"]
+        variants_left = sum(len(keys) for keys in dchr_class_sorted.values())
+        class_summaries.append(
+            Stage3ClassSummary(
+                class_name=class_name,
+                variants_left=variants_left,
+                transitions=int(overall["transitions"]),
+                transversions=int(overall["transversions"]),
+                titv_ratio=overall["titv_ratio"],
+            )
         )
         merge(dvars_all, dvars_filtered)
         classes_processed += 1
@@ -494,4 +529,9 @@ def run_stage3(
         encoding="utf-8",
     )
 
-    return Stage3Result(classes_processed=classes_processed, variants_kept=len(dvars_all), output_dir=output_dir)
+    return Stage3Result(
+        classes_processed=classes_processed,
+        variants_kept=len(dvars_all),
+        output_dir=output_dir,
+        class_summaries=class_summaries,
+    )

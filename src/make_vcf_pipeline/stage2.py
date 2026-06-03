@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import pickle
+import statistics
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -340,6 +341,36 @@ class BatchOutput:
     dvars_inh_path: Path | None
 
 
+@dataclass(frozen=True)
+class Stage2ClassSummary:
+    class_name: str
+    mean_variants_per_patient: float
+    stdev_variants_per_patient: float
+
+
+@dataclass(frozen=True)
+class Stage2Result:
+    outputs: List[BatchOutput]
+    class_summaries: List[Stage2ClassSummary]
+
+
+def _variants_per_patient_stats(counts: List[int]) -> tuple[float, float]:
+    if not counts:
+        return 0.0, 0.0
+    mean = statistics.mean(counts)
+    stdev = statistics.stdev(counts) if len(counts) > 1 else 0.0
+    return mean, stdev
+
+
+def print_stage2_summary(result: Stage2Result, *, task: str) -> None:
+    print(f"[stage2 summary] task={task}")
+    for row in result.class_summaries:
+        print(
+            f"  {row.class_name}: mean_variants_per_patient={row.mean_variants_per_patient:.4f} "
+            f"stdev={row.stdev_variants_per_patient:.4f}"
+        )
+
+
 def build_file_path(input_dir: Path, patient_id: str, suffix: str) -> Path:
     return input_dir / patient_id / f"{patient_id}.{suffix.lstrip('.')}"
 
@@ -357,7 +388,7 @@ def run_stage2(
     save_denovo: bool = False,
     use_ext_denovo: bool = False,
     write_hist: bool = False,
-) -> List[BatchOutput]:
+) -> Stage2Result:
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")
 
@@ -370,6 +401,7 @@ def run_stage2(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: List[BatchOutput] = []
+    class_summaries: List[Stage2ClassSummary] = []
 
     if classes_to_process:
         missing = [c for c in classes_to_process if c not in class_map]
@@ -501,4 +533,15 @@ def run_stage2(
         if hist_collector is not None:
             hist_collector.write_json_files(class_dir, task=task)
 
-    return outputs
+        count_map = class_dvars_counts if task == "denovo" else class_dvars_inh_counts
+        per_patient = [count_map.get(patient_id, 0) for patient_id in patient_ids]
+        mean_v, stdev_v = _variants_per_patient_stats(per_patient)
+        class_summaries.append(
+            Stage2ClassSummary(
+                class_name=class_name,
+                mean_variants_per_patient=mean_v,
+                stdev_variants_per_patient=stdev_v,
+            )
+        )
+
+    return Stage2Result(outputs=outputs, class_summaries=class_summaries)

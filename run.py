@@ -17,6 +17,7 @@ from make_vcf_pipeline.stage1 import (
     DEFAULT_CAP_MIN,
     load_class_map,
     parse_suffixes,
+    print_stage1_summary,
     resolve_stage2_input_dir,
     resolve_stage2_output_dir,
     run_stage1,
@@ -24,6 +25,7 @@ from make_vcf_pipeline.stage1 import (
 from make_vcf_pipeline.stage2 import (
     parse_class_suffix_pairs,
     parse_classes_to_process as parse_stage2_classes_to_process,
+    print_stage2_summary,
     run_stage2,
 )
 from make_vcf_pipeline.stage3 import (
@@ -35,6 +37,7 @@ from make_vcf_pipeline.stage3 import (
     filter_caps_from_args,
     parse_class_cap_pairs,
     parse_classes_to_process,
+    print_stage3_summary,
     resolve_stage3_output,
     run_stage3,
 )
@@ -205,6 +208,7 @@ def main() -> None:
             print(f"[stage1] missed -> {len(stage1_result.missed_txt_paths)} files")
         if stage1_result.small_txt_paths:
             print(f"[stage1] small -> {len(stage1_result.small_txt_paths)} files")
+        print_stage1_summary(stage1_result)
 
     if args.run_stage2:
         if class_map is None:
@@ -214,7 +218,7 @@ def main() -> None:
 
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
-        stage2_outputs = run_stage2(
+        stage2_result = run_stage2(
             input_dir=args.input_dir,
             output_dir=stage2_out_dir,
             class_map=class_map,
@@ -228,7 +232,8 @@ def main() -> None:
             use_ext_denovo=args.use_ext_denovo,
             write_hist=args.stage2_hist,
         )
-        print(f"[stage2] done -> {len(stage2_outputs)} batch outputs in {stage2_out_dir}")
+        print(f"[stage2] done -> {len(stage2_result.outputs)} batch outputs in {stage2_out_dir}")
+        print_stage2_summary(stage2_result, task=args.task)
 
     if args.run_stage3:
         if class_map is None:
@@ -258,6 +263,7 @@ def main() -> None:
             task=args.task,
         )
         print(f"[stage3] done -> {stage3_result.output_dir}")
+        print_stage3_summary(stage3_result, task=args.task)
 
 
 if __name__ == "__main__":

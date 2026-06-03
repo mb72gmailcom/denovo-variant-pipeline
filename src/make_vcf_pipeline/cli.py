@@ -11,6 +11,7 @@ from .stage1 import (
     infer_pipeline_root,
     load_class_map,
     parse_suffixes,
+    print_stage1_summary,
     resolve_class_map_json,
     resolve_stage2_input_dir,
     resolve_stage2_output_dir,
@@ -19,6 +20,7 @@ from .stage1 import (
 from .stage2 import (
     parse_class_suffix_pairs,
     parse_classes_to_process as parse_stage2_classes_to_process,
+    print_stage2_summary,
     run_stage2,
 )
 from .stage3 import (
@@ -30,6 +32,7 @@ from .stage3 import (
     filter_caps_from_args,
     parse_class_cap_pairs,
     parse_classes_to_process,
+    print_stage3_summary,
     resolve_stage3_output,
     run_stage3,
 )
@@ -359,6 +362,7 @@ def main() -> None:
             print(json.dumps({k: str(v) for k, v in result.missed_txt_paths.items()}, indent=2))
         if result.small_txt_paths:
             print(json.dumps({k: str(v) for k, v in result.small_txt_paths.items()}, indent=2))
+        print_stage1_summary(result)
         return
 
     if args.command == "stage2":
@@ -370,7 +374,7 @@ def main() -> None:
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
         stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
-        outputs = run_stage2(
+        stage2_result = run_stage2(
             input_dir=args.input_dir,
             output_dir=stage2_out_dir,
             class_map=class_map,
@@ -384,7 +388,8 @@ def main() -> None:
             use_ext_denovo=args.use_ext_denovo,
             write_hist=args.stage2_hist,
         )
-        print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
+        print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
+        print_stage2_summary(stage2_result, task=args.task)
         return
 
     if args.command == "run12":
@@ -401,7 +406,7 @@ def main() -> None:
         class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
         stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
-        outputs = run_stage2(
+        stage2_result = run_stage2(
             input_dir=args.input_dir,
             output_dir=stage2_out_dir,
             class_map=stage1_result.filtered_classes_to_patients,
@@ -416,7 +421,9 @@ def main() -> None:
             write_hist=args.stage2_hist,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")
-        print(json.dumps([o.__dict__ for o in outputs], indent=2, default=str))
+        print_stage1_summary(stage1_result)
+        print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
+        print_stage2_summary(stage2_result, task=args.task)
         return
 
     if args.command == "stage3":
@@ -441,6 +448,7 @@ def main() -> None:
             task=args.task,
         )
         print(json.dumps(result.__dict__, indent=2, default=str))
+        print_stage3_summary(result, task=args.task)
         return
 
     if args.command == "run123":
@@ -458,7 +466,7 @@ def main() -> None:
         stage2_dir = resolve_stage2_output_dir(args.output_dir)
         filtered_map = stage1_result.filtered_classes_to_patients
 
-        stage2_outputs = run_stage2(
+        stage2_result = run_stage2(
             input_dir=args.input_dir,
             output_dir=stage2_dir,
             class_map=filtered_map,
@@ -487,8 +495,11 @@ def main() -> None:
             task=args.task,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")
-        print(json.dumps([o.__dict__ for o in stage2_outputs], indent=2, default=str))
+        print_stage1_summary(stage1_result)
+        print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
+        print_stage2_summary(stage2_result, task=args.task)
         print(json.dumps(stage3_result.__dict__, indent=2, default=str))
+        print_stage3_summary(stage3_result, task=args.task)
         return
 
 
