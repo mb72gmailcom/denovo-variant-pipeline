@@ -12,6 +12,14 @@ from .stage2 import merge
 
 VarsMap = Dict[str, List[str]]
 FilterFn = Callable[[VarsMap, int], VarsMap]
+ExtraFilter = FilterFn | tuple[str, FilterFn]
+
+FILTER_STEP_LABELS: Dict[str, str] = {
+    "original": "original variants",
+    "patient_variant_cap": "after patient variant cap",
+    "snv_only": "after SNV filter",
+    "genotype_qc": "after genotype QC (depth/quality/AB)",
+}
 
 TRANSITION_PAIRS = frozenset({("A", "G"), ("G", "A"), ("T", "C"), ("C", "T")})
 STAGE3_CHROMOSOMES = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
@@ -286,22 +294,90 @@ def filter_by_is_good(dvars: VarsMap, caps: FilterCaps) -> VarsMap:
     return filtered
 
 
+def parse_snv_key(key: str) -> tuple[str, str, str] | None:
+    parts = key.split("_")
+    if len(parts) < 4:
+        return None
+    chrom, ref, alt = parts[0], parts[2], parts[3]
+    if chrom not in STAGE3_CHROMOSOMES:
+        return None
+    if len(ref) != 1 or len(alt) != 1:
+        return None
+    return chrom, ref.upper(), alt.upper()
+
+
+def count_snv_variant_keys(dvars: VarsMap) -> int:
+    """Count variant keys with single-base ref and alt (same rule as VCF / Ti-Tv)."""
+    return sum(1 for key in dvars if parse_snv_key(key) is not None)
+
+
+def count_variant_keys(dvars: VarsMap) -> int:
+    return len(dvars)
+
+
+def filter_snv_variants(dvars: VarsMap) -> VarsMap:
+    return {key: values for key, values in dvars.items() if parse_snv_key(key) is not None}
+
+
+@dataclass(frozen=True)
+class FilterStepCount:
+    step: str
+    variants_remaining: int
+
+    @property
+    def label(self) -> str:
+        return FILTER_STEP_LABELS.get(self.step, self.step)
+
+
+@dataclass(frozen=True)
+class FilterPipelineResult:
+    dvars: VarsMap
+    steps: List[FilterStepCount]
+
+
+def _normalize_extra_filter(item: ExtraFilter, index: int) -> tuple[str, FilterFn]:
+    if isinstance(item, tuple):
+        name, fn = item
+        if not name.strip():
+            raise ValueError("Extra filter name must be non-empty")
+        return name.strip(), fn
+    return f"extra_filter_{index}", item
+
+
 def apply_filters(
     dvars: VarsMap,
     denovo_cap: int,
+    *,
+    snv_only: bool = True,
     filter_caps: FilterCaps | None = None,
-    extra_filters: Iterable[FilterFn] | None = None,
-) -> VarsMap:
+    extra_filters: Iterable[ExtraFilter] | None = None,
+) -> FilterPipelineResult:
+    steps: List[FilterStepCount] = []
+    steps.append(FilterStepCount("original", count_variant_keys(dvars)))
+
+    # 1) per-patient variant cap (stage1 file-size selection is upstream)
+    current = filter_by_patient_denovo_cap(
+        dvars, denovo_cap, keep_full_gtex=filter_caps is not None
+    )
+    steps.append(FilterStepCount("patient_variant_cap", count_variant_keys(current)))
+
+    # 2) SNV-only variant keys
+    if snv_only:
+        current = filter_snv_variants(current)
+        steps.append(FilterStepCount("snv_only", count_variant_keys(current)))
+
+    # 3) genotype quality (is_good), optional
     if filter_caps is not None:
-        current = filter_by_patient_denovo_cap(dvars, denovo_cap, keep_full_gtex=True)
         current = filter_by_is_good(current, filter_caps)
-    else:
-        current = filter_by_patient_denovo_cap(dvars, denovo_cap)
+        steps.append(FilterStepCount("genotype_qc", count_variant_keys(current)))
 
     if extra_filters:
-        for fn in extra_filters:
+        for index, item in enumerate(extra_filters):
+            step_name, fn = _normalize_extra_filter(item, index)
             current = fn(current, denovo_cap)
-    return current
+            steps.append(FilterStepCount(step_name, count_variant_keys(current)))
+
+    return FilterPipelineResult(dvars=current, steps=steps)
 
 
 def split_keys_by_chromosome(dvars: VarsMap) -> Dict[str, List[str]]:
@@ -326,22 +402,21 @@ def sort_chromosome_keys(dchr: Dict[str, List[str]]) -> Dict[str, List[str]]:
     return sorted_map
 
 
-def write_snv_nohead_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str, List[str]]) -> None:
+def write_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str, List[str]]) -> None:
+    """Write headerless per-chromosome VCF from filtered variant keys (no #CHROM line)."""
     for chrom, keys in dchr_sorted.items():
         chrom_dir = output_dir / chrom
         chrom_dir.mkdir(parents=True, exist_ok=True)
-        out_file = chrom_dir / "variants_snv_nohead.vcf"
+        out_file = chrom_dir / "variants.vcf"
 
         prev_pos = None
         prev_row = None
         with out_file.open("w", encoding="utf-8") as f:
             for key in keys:
-                parts = key.split("_")
+                parts = key.split("_", 3)
                 if len(parts) < 4:
                     continue
-                row_chrom, pos, ref, alt = parts[0], parts[1], parts[2], parts[3]
-                if len(ref) != 1 or len(alt) != 1:
-                    continue
+                row_chrom, pos, ref, alt = parts
 
                 if pos != prev_pos:
                     if prev_row is not None:
@@ -353,23 +428,6 @@ def write_snv_nohead_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str
 
             if prev_row is not None:
                 f.write("\t".join(prev_row) + "\n")
-
-
-def parse_snv_key(key: str) -> tuple[str, str, str] | None:
-    parts = key.split("_")
-    if len(parts) < 4:
-        return None
-    chrom, ref, alt = parts[0], parts[2], parts[3]
-    if chrom not in STAGE3_CHROMOSOMES:
-        return None
-    if len(ref) != 1 or len(alt) != 1:
-        return None
-    return chrom, ref.upper(), alt.upper()
-
-
-def count_snv_variant_keys(dvars: VarsMap) -> int:
-    """Count variant keys with single-base ref and alt (same rule as VCF / Ti-Tv)."""
-    return sum(1 for key in dvars if parse_snv_key(key) is not None)
 
 
 def is_transition(ref: str, alt: str) -> bool:
@@ -428,10 +486,12 @@ def compute_titv_summary(dchr_sorted: Dict[str, List[str]]) -> Dict[str, object]
 @dataclass(frozen=True)
 class Stage3ClassSummary:
     class_name: str
-    snv_variants_left: int
+    variants_left: int
     transitions: int
     transversions: int
     titv_ratio: float | None
+    output_dir: Path
+    filter_steps: List[FilterStepCount]
 
 
 @dataclass(frozen=True)
@@ -443,81 +503,62 @@ class Stage3Result:
 
 
 def print_stage3_summary(result: Stage3Result, *, task: str) -> None:
-    print(f"[stage3 summary] task={task}")
+    print(f"[stage3 summary] task={task} output={result.output_dir}")
     for row in result.class_summaries:
         titv_display = "n/a" if row.titv_ratio is None else f"{row.titv_ratio:.6f}"
         print(
-            f"  {row.class_name}: snv_variants_left={row.snv_variants_left} "
-            f"Ti/Tv={titv_display} (Ti={row.transitions} Tv={row.transversions})"
+            f"  {row.class_name}: variants_left={row.variants_left} "
+            f"Ti/Tv={titv_display} (Ti={row.transitions} Tv={row.transversions}) "
+            f"-> {row.output_dir}"
         )
+        for step in row.filter_steps:
+            print(f"    {step.label}: {step.variants_remaining}")
 
 
-def run_stage3(
-    stage2_dir: Path,
-    output_dir: Path,
-    class_map: Dict[str, List[str]],
-    default_cap: int | None,
-    class_to_cap: Dict[str, int],
-    filter_caps: FilterCaps | None = None,
-    extra_filters: Iterable[FilterFn] | None = None,
-    task: str = "denovo",
-) -> Stage3Result:
-    if task not in ("denovo", "inherited"):
-        raise ValueError("task must be 'denovo' or 'inherited'")
+def _filter_steps_to_json(steps: List[FilterStepCount]) -> List[Dict[str, object]]:
+    return [
+        {
+            "step": step.step,
+            "label": step.label,
+            "variants_remaining": step.variants_remaining,
+        }
+        for step in steps
+    ]
 
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    load_combo = load_combined_dvars_for_class if task == "denovo" else load_combined_dvars_inh_for_class
-
-    dvars_all: VarsMap = {}
-    classes_processed = 0
-    class_summaries: List[Stage3ClassSummary] = []
-
-    for class_name in class_map.keys():
-        cap = class_to_cap.get(class_name, default_cap)
-        if cap is None:
-            raise ValueError(f"No denovo cap provided for class '{class_name}'")
-
-        dvars_combo = load_combo(stage2_dir, class_name)
-        dvars_filtered = apply_filters(
-            dvars_combo, cap, filter_caps=filter_caps, extra_filters=extra_filters
-        )
-        dchr_class = split_keys_by_chromosome(dvars_filtered)
-        dchr_class_sorted = sort_chromosome_keys(dchr_class)
-        titv_class = compute_titv_summary(dchr_class_sorted)
-        overall = titv_class["overall"]
-        snv_variants_left = count_snv_variant_keys(dvars_filtered)
-        class_summaries.append(
-            Stage3ClassSummary(
-                class_name=class_name,
-                snv_variants_left=snv_variants_left,
-                transitions=int(overall["transitions"]),
-                transversions=int(overall["transversions"]),
-                titv_ratio=overall["titv_ratio"],
-            )
-        )
-        merge(dvars_all, dvars_filtered)
-        classes_processed += 1
-
-    dchr = split_keys_by_chromosome(dvars_all)
-    dchr_sorted = sort_chromosome_keys(dchr)
-    write_snv_nohead_vcf(dvars_all, output_dir, dchr_sorted)
+def _write_class_stage3_outputs(
+    class_dir: Path,
+    class_name: str,
+    task: str,
+    dvars_filtered: VarsMap,
+    dchr_sorted: Dict[str, List[str]],
+    *,
+    run_dir_name: str,
+    patient_variant_cap: int,
+    snv_only: bool,
+    filter_caps: FilterCaps | None,
+    filter_steps: List[FilterStepCount],
+) -> None:
+    class_dir.mkdir(parents=True, exist_ok=True)
+    write_vcf(dvars_filtered, class_dir, dchr_sorted)
 
     titv_summary = compute_titv_summary(dchr_sorted)
-    titv_file = output_dir / "stage3_titv.json"
-    titv_file.write_text(json.dumps(titv_summary, indent=2, sort_keys=True), encoding="utf-8")
+    (class_dir / "stage3_titv.json").write_text(
+        json.dumps(titv_summary, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
-    output_stem, output_version = parse_versioned_dir_name(output_dir.name)
     summary: Dict[str, object] = {
         "task": task,
-        "output_dir": output_dir.name,
-        "output_stem": output_stem,
-        "version": output_version,
-        "classes_processed": classes_processed,
-        "classes_included": sorted(class_map.keys()),
-        "variants_kept": len(dvars_all),
+        "class": class_name,
+        "output_dir": class_dir.name,
+        "run_dir": run_dir_name,
+        "variants_kept": len(dvars_filtered),
         "chromosome_counts": {chrom: len(keys) for chrom, keys in dchr_sorted.items()},
+        "patient_variant_cap": patient_variant_cap,
+        "snv_only": snv_only,
         "filter_enabled": filter_caps is not None,
+        "filter_pipeline": _filter_steps_to_json(filter_steps),
     }
     if filter_caps is not None:
         summary["filter_caps"] = {
@@ -528,15 +569,84 @@ def run_stage3(
             "ab_cap_het": filter_caps.ab_cap_het,
         }
 
-    summary_file = output_dir / "stage3_summary.json"
-    summary_file.write_text(
+    (class_dir / "stage3_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
+
+def run_stage3(
+    stage2_dir: Path,
+    output_dir: Path,
+    class_map: Dict[str, List[str]],
+    default_cap: int | None,
+    class_to_cap: Dict[str, int],
+    filter_caps: FilterCaps | None = None,
+    snv_only: bool = True,
+    extra_filters: Iterable[ExtraFilter] | None = None,
+    task: str = "denovo",
+) -> Stage3Result:
+    if task not in ("denovo", "inherited"):
+        raise ValueError("task must be 'denovo' or 'inherited'")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    load_combo = load_combined_dvars_for_class if task == "denovo" else load_combined_dvars_inh_for_class
+
+    classes_processed = 0
+    class_summaries: List[Stage3ClassSummary] = []
+    variants_kept_total = 0
+
+    for class_name in class_map.keys():
+        cap = class_to_cap.get(class_name, default_cap)
+        if cap is None:
+            raise ValueError(f"No denovo cap provided for class '{class_name}'")
+
+        dvars_combo = load_combo(stage2_dir, class_name)
+        filter_result = apply_filters(
+            dvars_combo,
+            cap,
+            snv_only=snv_only,
+            filter_caps=filter_caps,
+            extra_filters=extra_filters,
+        )
+        dvars_filtered = filter_result.dvars
+        dchr_class_sorted = sort_chromosome_keys(split_keys_by_chromosome(dvars_filtered))
+        titv_class = compute_titv_summary(dchr_class_sorted)
+        overall = titv_class["overall"]
+        variants_left = len(dvars_filtered)
+
+        class_dir = output_dir / f"class_{class_name}"
+        _write_class_stage3_outputs(
+            class_dir,
+            class_name,
+            task,
+            dvars_filtered,
+            dchr_class_sorted,
+            run_dir_name=output_dir.name,
+            patient_variant_cap=cap,
+            snv_only=snv_only,
+            filter_caps=filter_caps,
+            filter_steps=filter_result.steps,
+        )
+
+        variants_kept_total += variants_left
+        class_summaries.append(
+            Stage3ClassSummary(
+                class_name=class_name,
+                variants_left=variants_left,
+                transitions=int(overall["transitions"]),
+                transversions=int(overall["transversions"]),
+                titv_ratio=overall["titv_ratio"],
+                output_dir=class_dir,
+                filter_steps=filter_result.steps,
+            )
+        )
+        classes_processed += 1
+
     return Stage3Result(
         classes_processed=classes_processed,
-        variants_kept=len(dvars_all),
+        variants_kept=variants_kept_total,
         output_dir=output_dir,
         class_summaries=class_summaries,
     )

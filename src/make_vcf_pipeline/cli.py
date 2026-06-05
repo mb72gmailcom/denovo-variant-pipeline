@@ -52,6 +52,15 @@ def _add_stage2_hist_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_stage3_snv_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--snv",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stage3: drop non-SNV variant keys before output (default: enabled). Use --no-snv to disable.",
+    )
+
+
 def _add_stage3_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--filter",
@@ -282,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="denovo: merge batch dVars. inherited: merge batch dVars_inh; output under stage3_inherited_vN/...",
     )
     _add_cap_args(p3)
+    _add_stage3_snv_args(p3)
     _add_stage3_filter_args(p3)
 
     p123 = subparsers.add_parser("run123", help="Run stage1, stage2, then stage3")
@@ -321,6 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_cap_args(p123)
     _add_stage2_hist_args(p123)
+    _add_stage3_snv_args(p123)
     _add_stage3_filter_args(p123)
     return parser
 
@@ -445,6 +456,7 @@ def main() -> None:
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
             filter_caps=_stage3_filter_caps(args),
+            snv_only=args.snv,
             task=args.task,
         )
         print(json.dumps(result.__dict__, indent=2, default=str))
@@ -492,6 +504,7 @@ def main() -> None:
             default_cap=args.denovo_cap,
             class_to_cap=class_to_cap,
             filter_caps=_stage3_filter_caps(args),
+            snv_only=args.snv,
             task=args.task,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")

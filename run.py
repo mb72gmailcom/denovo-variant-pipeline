@@ -157,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage2/Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
     )
     parser.add_argument(
+        "--snv",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stage3: drop non-SNV variant keys (default: enabled). Use --no-snv to disable.",
+    )
+    parser.add_argument(
         "--filter",
         action="store_true",
         help="Stage3: after per-patient cap, apply is_good QC on mother, father, and child.",
@@ -260,6 +266,7 @@ def main() -> None:
                 filter_ab_hom1=args.filter_ab_hom1,
                 filter_ab_het=args.filter_ab_het,
             ),
+            snv_only=args.snv,
             task=args.task,
         )
         print(f"[stage3] done -> {stage3_result.output_dir}")

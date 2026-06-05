@@ -137,16 +137,16 @@ Denovo classification (stage 2):
 Use class map from stage 1 and stage 2 batch outputs.  
 `--output-dir` is the **pipeline root**; results go under a stage3 directory chosen by `--task` and optional `--classes-to-process`:
 
-- **`--task denovo` (default):** merge `batch_*_dVars.pkl` → `<output-dir>/stage3_vN/` or `<output-dir>/stage3_<classes>_vN/`
-- **`--task inherited`:** merge `batch_*_dVars_inh.pkl` → `<output-dir>/stage3_inherited_vN/` or `<output-dir>/stage3_inherited_<classes>_vN/`
+- **`--task denovo` (default):** read `batch_*_dVars.pkl` per class → `<output-dir>/stage3_vN/` or `<output-dir>/stage3_<classes>_vN/`
+- **`--task inherited`:** read `batch_*_dVars_inh.pkl` per class → `<output-dir>/stage3_inherited_vN/` or `<output-dir>/stage3_inherited_<classes>_vN/`
 
-Each stage3 run uses the next monotonic version `N` for that stem (e.g. `stage3_v0`, then `stage3_v1`; deleted intermediate versions are not reused). Run parameters (including filter caps) are recorded in `stage3_summary.json`.
+Each stage3 run uses the next monotonic version `N` for that stem (e.g. `stage3_v0`, then `stage3_v1`; deleted intermediate versions are not reused). Variants are **not** merged across classes; each class is written to its own subdirectory with separate summary files.
 
 `--class-map-json` defaults to `<output-dir>/stage1/stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json`.  
 `--stage2-dir` defaults to `<output-dir>/stage2`.  
 Use the same `--cap-min` / `--cap-max` as stage 1 (defaults 22000 / 75000).
 
-Within each directory, per-chromosome `variants_snv_nohead.vcf` files are written the same way as for denovo.
+Within each `class_<name>/` directory, per-chromosome `variants.vcf` files are written (headerless; variant set depends on `--snv` and other stage3 filters).
 
 ```bash
 make-vcf stage3 \
@@ -181,7 +181,11 @@ You can also provide caps as one comma-separated list:
 --class-cap SSC=80,ABC=120
 ```
 
-Optional genotype QC (`--filter`): runs **after** per-patient denovo cap, on full triplet records from stage2. Mother, father, and child must all pass `is_good`. Thresholds are recorded in `stage3_summary.json`.
+Stage3 filter order (recorded in each class `stage3_summary.json`):
+
+1. **Per-patient variant cap** — `--denovo-cap` / `--class-cap` (excludes patients with too many variants)
+2. **SNV-only** — `--snv` (default on; use `--no-snv` to keep indels/multi-base alleles)
+3. **Genotype QC** — `--filter` (optional; `is_good` on mother, father, and child)
 
 Defaults when `--filter` is set: `--filter-dp 20`, `--filter-qt 90`, `--filter-abHom0 0.05`, `--filter-abHom1 0.05`, `--filter-abHet 0.30`. Depth and quality pass when `dp >= dp_cap` and `qt >= qt_cap`.
 
@@ -196,10 +200,21 @@ Override any threshold explicitly, e.g. `--filter-dp 15 --filter-abHet 0.25`.
 
 Without `--filter`, stage3 behavior is unchanged (cap only).
 
-Outputs (under the chosen stage3 directory):
-- `chr1/variants_snv_nohead.vcf` (and `chr2` ... `chr22`, `chrX`)
-- `stage3_summary.json` (includes `filter_enabled` and `filter_caps` when `--filter` is used)
-- `stage3_titv.json` (transitions, transversions, and Ti/Tv ratio per chromosome and overall)
+Outputs (under the chosen stage3 run directory, one set per class):
+
+```
+stage3_vN/
+  class_SSC/
+    chr1/variants.vcf
+    chr2/variants.vcf
+    ...
+    stage3_summary.json   # cap, snv_only, filter_caps for this class
+    stage3_titv.json      # Ti/Tv per chromosome and overall for this class
+  class_ABC/
+    ...
+```
+
+Each `stage3_summary.json` includes `patient_variant_cap` (the cap applied to that class), `snv_only`, `filter_caps` when `--filter` is used, and a `filter_pipeline` array recording variant-key counts after each filter step (original → patient cap → SNV if enabled → genotype QC if enabled → any extra filters).
 
 ## Run all stages
 
