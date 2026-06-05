@@ -11,7 +11,9 @@ from typing import Dict, List
 class Stage1ClassSummary:
     class_name: str
     missed_files: int
-    processed_patients: int
+    small_files: int
+    huge_files: int
+    selected_patients: int
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,8 @@ def print_stage1_summary(result: Stage1Result) -> None:
     for row in result.class_summaries:
         print(
             f"  {row.class_name}: missed_files={row.missed_files} "
-            f"processed_patients={row.processed_patients}"
+            f"small_files={row.small_files} huge_files={row.huge_files} "
+            f"selected_patients={row.selected_patients}"
         )
 
 
@@ -167,13 +170,15 @@ def process_patients_for_suffix(
     suffix: str,
     stats: str,
     cap_min: int,
-) -> tuple[Dict[str, int], Dict[str, int], List[str], List[str], Dict[str, int]]:
-    """One pass: stats, mtime, missed, small, and byte sizes for existing files."""
+    cap_max: int,
+) -> tuple[Dict[str, int], Dict[str, int], List[str], List[str], List[str], Dict[str, int]]:
+    """One pass: stats, mtime, missed, small, huge, and byte sizes for existing files."""
     stats_dict: Dict[str, int] = {}
     mtime_dict: Dict[str, int] = {}
     sizes: Dict[str, int] = {}
     missed: List[str] = []
     small: List[str] = []
+    huge: List[str] = []
 
     for patient_id in patient_ids:
         file_path = build_patient_file_path(input_dir, patient_id, suffix)
@@ -193,8 +198,10 @@ def process_patients_for_suffix(
 
         if size < cap_min:
             small.append(patient_id)
+        elif size > cap_max:
+            huge.append(patient_id)
 
-    return stats_dict, mtime_dict, missed, small, sizes
+    return stats_dict, mtime_dict, missed, small, huge, sizes
 
 
 def filter_class_by_sizes(
@@ -251,12 +258,16 @@ def run_stage1(
         for class_name, patient_ids in classes_to_patients.items():
             sizes_by_suffix: Dict[str, Dict[str, int]] = {}
             missed_files = 0
+            small_files = 0
+            huge_files = 0
             for suffix in suffixes:
                 label = f"{class_name}_{suffix_label(suffix)}"
-                stats_dict, mtime_dict, missed, small, sizes = process_patients_for_suffix(
-                    input_dir, patient_ids, suffix, stats, cap_min
+                stats_dict, mtime_dict, missed, small, huge, sizes = process_patients_for_suffix(
+                    input_dir, patient_ids, suffix, stats, cap_min, cap_max
                 )
                 missed_files += len(missed)
+                small_files += len(small)
+                huge_files += len(huge)
                 sizes_by_suffix[suffix] = sizes
 
                 stats_path = stage1_dir / f"stage1_stats_{stats}_{label}.json"
@@ -288,7 +299,9 @@ def run_stage1(
                 Stage1ClassSummary(
                     class_name=class_name,
                     missed_files=missed_files,
-                    processed_patients=len(filtered_classes[class_name]),
+                    small_files=small_files,
+                    huge_files=huge_files,
+                    selected_patients=len(filtered_classes[class_name]),
                 )
             )
     else:
@@ -300,7 +313,9 @@ def run_stage1(
                 Stage1ClassSummary(
                     class_name=class_name,
                     missed_files=0,
-                    processed_patients=len(patient_ids),
+                    small_files=0,
+                    huge_files=0,
+                    selected_patients=len(patient_ids),
                 )
             )
 
