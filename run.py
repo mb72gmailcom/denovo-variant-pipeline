@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--input-dir",
         type=Path,
         default=None,
-        help="Input directory with patient subdirs (required for stage1 and stage2).",
+        help="Input directory with patient subdirs (required for stage1 only).",
     )
     parser.add_argument("--output-dir", type=Path, required=True, help="Root output directory")
 
@@ -207,8 +207,8 @@ def main() -> None:
     if not (args.run_stage1 or args.run_stage2 or args.run_stage3):
         raise ValueError("Select at least one stage flag: --run-stage1/--run-stage2/--run-stage3")
 
-    if (args.run_stage1 or args.run_stage2) and args.input_dir is None:
-        raise ValueError("--input-dir is required when running stage1 or stage2")
+    if args.run_stage1 and args.input_dir is None:
+        raise ValueError("--input-dir is required when running stage1")
 
     stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
 

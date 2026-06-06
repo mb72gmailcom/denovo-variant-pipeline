@@ -316,8 +316,8 @@ python run.py \
 ```
 
 Run only selected stages by providing only the needed flags:
-- `--run-stage1` and/or `--run-stage2` require `--input-dir`
-- `--run-stage3` does not use `--input-dir` (reads stage2 batch outputs under `--output-dir`)
+- `--run-stage1` requires `--input-dir`
+- `--run-stage2` and `--run-stage3` do not use `--input-dir` (read from `stage1_parameters.json` and stage2 outputs under `--output-dir`)
 
 Stage3-only example:
 
