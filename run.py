@@ -16,15 +16,16 @@ from make_vcf_pipeline.stage1 import (
     DEFAULT_CAP_MAX,
     DEFAULT_CAP_MIN,
     load_class_map,
-    parse_suffixes,
+    load_stage1_parameters_from_result,
     print_stage1_summary,
     resolve_stage2_input_dir,
     resolve_stage2_output_dir,
+    resolve_stage2_run_config,
     run_stage1,
+    stage1_parameters_path,
 )
 from make_vcf_pipeline.stage2 import (
     parse_class_suffix_pairs,
-    parse_classes_to_process as parse_stage2_classes_to_process,
     print_stage2_summary,
     run_stage2,
 )
@@ -38,6 +39,7 @@ from make_vcf_pipeline.stage3 import (
     parse_class_cap_pairs,
     parse_classes_to_process,
     print_stage3_summary,
+    resolve_stage3_classes,
     resolve_stage3_output,
     run_stage3,
 )
@@ -65,22 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Stage 1 parameters
     parser.add_argument(
-        "--prefixes",
+        "--classes",
         type=str,
         default="",
-        help="Stage1: comma-separated patient class prefixes (empty means one class).",
+        help="Stage1: comma-separated class name prefixes (empty means one class).",
     )
     parser.add_argument(
         "--stats",
         choices=("size", "counts"),
         default="size",
-        help="Stage1: per-patient file statistic when --suffixes is set (default: size).",
-    )
-    parser.add_argument(
-        "--suffixes",
-        type=str,
-        default="",
-        help="Stage1: comma-separated suffixes for file stats, e.g. .vcf.gz,.final.vcf.gz",
+        help="Stage1: per-patient file statistic when --suffix or --class-suffix is set (default: size).",
     )
     parser.add_argument(
         "--cap-min",
@@ -94,19 +90,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CAP_MAX,
         help="Stage1 size filter upper bound (bytes); stage2/3 read filtered class map with these caps.",
     )
-
-    # Stage 2 parameters
     parser.add_argument(
         "--suffix",
         type=str,
         default=None,
-        help="Stage2: default file suffix (e.g. vcf.gz).",
+        help="Stage1: default file suffix (e.g. vcf.gz). Overridden by --class-suffix per class.",
     )
     parser.add_argument(
         "--class-suffix",
         action="append",
         default=[],
-        help="Stage2: per-class suffix override, repeat as class=suffix.",
+        help="Stage1: per-class file suffix. Repeat format class=suffix.",
+    )
+
+    # Stage 2 parameters
+    parser.add_argument(
+        "--stage2-classes",
+        type=str,
+        default="",
+        help="Stage2: optional subset of classes (comma-separated). Default: all from stage1 parameters.",
     )
     parser.add_argument("--batch-size", type=int, default=1000, help="Stage2: patient batch size")
     parser.add_argument(
@@ -154,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--classes-to-process",
         action="append",
         default=[],
-        help="Stage2/Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
+        help="Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
     )
     parser.add_argument(
         "--snv",
@@ -191,21 +193,26 @@ def main() -> None:
     stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
 
     class_map = None
+    stage1_result = None
+    stage2_classes: List[str] | None = None
 
     if args.run_stage1:
-        prefixes = _split_csv(args.prefixes)
+        classes = _split_csv(args.classes)
+        class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
         stage1_result = run_stage1(
             args.input_dir,
             args.output_dir,
-            prefixes,
+            classes,
             stats=args.stats,
-            suffixes=parse_suffixes(args.suffixes),
+            default_suffix=args.suffix,
+            class_to_suffix=class_to_suffix,
             cap_min=args.cap_min,
             cap_max=args.cap_max,
         )
         class_map = stage1_result.filtered_classes_to_patients
         print(f"[stage1] done -> {stage1_result.output_dir}")
         print(f"[stage1] filtered class map -> {stage1_result.filtered_output_json}")
+        print(f"[stage1] parameters -> {stage1_result.parameters_json}")
         if stage1_result.stats_json_paths:
             print(f"[stage1] stats -> {len(stage1_result.stats_json_paths)} files")
         if stage1_result.mtime_json_paths:
@@ -218,46 +225,58 @@ def main() -> None:
 
     if args.run_stage2:
         if class_map is None:
-            class_map = load_class_map(
-                pipeline_root=args.output_dir, cap_min=args.cap_min, cap_max=args.cap_max
-            )
+            class_map = load_class_map(pipeline_root=args.output_dir, cap_min=args.cap_min, cap_max=args.cap_max)
 
-        class_to_suffix = parse_class_suffix_pairs(args.class_suffix)
-        classes_to_process = parse_stage2_classes_to_process(args.classes_to_process)
+        stage1_params = (
+            load_stage1_parameters_from_result(stage1_result) if stage1_result is not None else None
+        )
+        classes_override = _split_csv(args.stage2_classes) if args.stage2_classes.strip() else None
+        stage2_config = resolve_stage2_run_config(
+            args.output_dir,
+            class_map,
+            classes_override,
+            stage1_params=stage1_params,
+        )
+        stage2_classes = stage2_config.classes
         stage2_result = run_stage2(
             input_dir=args.input_dir,
             output_dir=stage2_out_dir,
             class_map=class_map,
-            default_suffix=args.suffix,
-            class_to_suffix=class_to_suffix,
+            suffix_per_class=stage2_config.suffix_per_class,
+            classes=stage2_config.classes,
             batch_size=args.batch_size,
             task=args.task,
-            classes_to_process=classes_to_process,
             save_inh=args.save_inh,
             save_denovo=args.save_denovo,
             use_ext_denovo=args.use_ext_denovo,
             write_hist=not args.stage2_nohist,
+            stage1_parameters_path=(
+                stage1_result.parameters_json if stage1_result is not None else stage1_parameters_path(args.output_dir)
+            ),
         )
         print(f"[stage2] done -> {len(stage2_result.outputs)} batch outputs in {stage2_out_dir}")
+        print(f"[stage2] parameters -> {stage2_result.parameters_json}")
         print_stage2_summary(stage2_result, task=args.task)
 
     if args.run_stage3:
         if class_map is None:
-            class_map = load_class_map(
-                pipeline_root=args.output_dir, cap_min=args.cap_min, cap_max=args.cap_max
-            )
+            class_map = load_class_map(pipeline_root=args.output_dir, cap_min=args.cap_min, cap_max=args.cap_max)
 
-        class_to_cap = parse_class_cap_pairs(args.class_cap)
-        requested = parse_classes_to_process(args.classes_to_process)
+        class_names = resolve_stage3_classes(
+            class_map,
+            classes_override=parse_classes_to_process(args.classes_to_process) or None,
+            stage2_classes=stage2_classes,
+            pipeline_root=args.output_dir,
+        )
         class_map_run, stage3_out_dir = resolve_stage3_output(
-            args.output_dir, class_map, requested, task=args.task
+            args.output_dir, class_map, class_names, task=args.task
         )
         stage3_result = run_stage3(
             stage2_dir=resolve_stage2_input_dir(None, args.output_dir),
             output_dir=stage3_out_dir,
             class_map=class_map_run,
             default_cap=args.denovo_cap,
-            class_to_cap=class_to_cap,
+            class_to_cap=parse_class_cap_pairs(args.class_cap),
             filter_caps=filter_caps_from_args(
                 filter_enabled=args.filter,
                 filter_dp=args.filter_dp,
@@ -270,6 +289,7 @@ def main() -> None:
             task=args.task,
         )
         print(f"[stage3] done -> {stage3_result.output_dir}")
+        print(f"[stage3] parameters -> {stage3_result.parameters_json}")
         print_stage3_summary(stage3_result, task=args.task)
 
 

@@ -13,6 +13,14 @@ Currently implemented:
 pip install -e .
 ```
 
+Each stage writes a parameters JSON in its output directory:
+
+| Stage | Path | Used by later stages for |
+|-------|------|--------------------------|
+| 1 | `<output-dir>/stage1/stage1_parameters.json` | Class map caps, suffixes per class |
+| 2 | `<output-dir>/stage2/stage2_parameters.json` | Task, suffixes, batch settings |
+| 3 | `<output-dir>/stage3_vN/stage3_parameters.json` | Caps, SNV/filter settings for the run |
+
 ## Stage 1
 
 `--output-dir` is the **pipeline root**; stage 1 writes under `<output-dir>/stage1/`.
@@ -23,31 +31,32 @@ Uniform cohort:
 make-vcf stage1 --input-dir /data/in --output-dir /data/out
 ```
 
-Classed cohort by prefixes:
+Classed cohort by patient ID prefix:
 
 ```bash
-make-vcf stage1 --input-dir /data/in --output-dir /data/out --prefixes SSC,ABC
+make-vcf stage1 --input-dir /data/in --output-dir /data/out --classes SSC,ABC
 ```
 
 Outputs (under `<output-dir>/stage1/`):
 - `stage1_patient_ids_by_class.json` (all patients by class)
 - `stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json` (default caps 22000–75000; used by stage 2/3)
+- `stage1_parameters.json` (run parameters: classes, caps, suffixes per class; read by stage 2/3 when CLI flags are omitted)
 - `stage1_<class>_patient_ids.txt`
 
-Size filtering (`--cap-min`, `--cap-max`, defaults 22000 and 75000): when `--suffixes` is set, keep a patient only if **every** listed suffix file exists and its byte size is within `[cap_min, cap_max]`. Without `--suffixes`, the filtered file matches the full class map.
+Size filtering (`--cap-min`, `--cap-max`, defaults 22000 and 75000): when `--suffix` or `--class-suffix` is set, keep a patient only if that class's suffix file exists and its byte size is within `[cap_min, cap_max]`. Without a suffix, the filtered file matches the full class map.
 
-Optional file statistics (when `--suffixes` is provided):
+Optional file statistics (when `--suffix` or `--class-suffix` is provided):
 
 - `--stats size` (default): byte size of each file
 - `--stats counts`: line count (supports `.gz`)
 
-Paths checked: `input_dir/<patient_id>/<patient_id>.<suffix>` for each suffix.
+Paths checked: `input_dir/<patient_id>/<patient_id>.<suffix>` using the class default (`--suffix`) or per-class override (`--class-suffix`).
 
-One JSON per class prefix and suffix for `--stats` (`stage1_stats_size_...` or `stage1_stats_counts_...`) and always for modification time (`stage1_stats_mtime_SSC_final_vcf_gz.json`). Mtime values are Unix epoch seconds (`st_mtime`). Only patients with existing files are included.
+One JSON per class for `--stats` (`stage1_stats_size_<class>_<suffix_label>.json` or `stage1_stats_counts_...`) and always for modification time (`stage1_stats_mtime_SSC_final_vcf_gz.json`). Mtime values are Unix epoch seconds (`st_mtime`). Only patients with existing files are included.
 
-Missing files: patient IDs with no file at the expected path are listed in `{prefix}_{suffix_label}.missed.txt`, e.g. `SSC_final_vcf_gz.missed.txt` (always written; empty if none missing).
+Missing files: patient IDs with no file at the expected path are listed in `{class}_{suffix_label}.missed.txt`, e.g. `SSC_final_vcf_gz.missed.txt` (always written; empty if none missing).
 
-Files smaller than `--cap-min`: patient IDs with an existing file below the minimum size cap are listed in `{prefix}_{suffix_label}.small_{cap_min}.txt`, e.g. `SSC_final_vcf_gz.small_22000.txt` (always written; empty if none).
+Files smaller than `--cap-min`: patient IDs with an existing file below the minimum size cap are listed in `{class}_{suffix_label}.small_{cap_min}.txt`, e.g. `SSC_final_vcf_gz.small_22000.txt` (always written; empty if none).
 
 Example:
 
@@ -55,58 +64,86 @@ Example:
 make-vcf stage1 \
   --input-dir /data/in \
   --output-dir /data/out \
-  --prefixes SSC,SP \
-  --suffixes .final.vcf.gz,.denovo.final.vcf.gz \
+  --classes SSC,SP \
+  --class-suffix SSC=.final.vcf.gz \
+  --class-suffix SP=.denovo.final.vcf.gz \
   --stats counts
 ```
+
+Default suffix for all classes, with one override:
+
+```bash
+make-vcf stage1 \
+  --input-dir /data/in \
+  --output-dir /data/out \
+  --classes SSC,SP \
+  --suffix .final.vcf.gz \
+  --class-suffix SP=.denovo.final.vcf.gz
+```
+
+Comma-separated pairs in one flag (same as stage 2):
+
+```bash
+--class-suffix SSC=.final.vcf.gz,SP=.denovo.final.vcf.gz
+```
+
+`stage1_parameters.json` records the full run configuration, including resolved suffixes per class:
+
+```json
+{
+  "version": 1,
+  "input_dir": "/data/in",
+  "pipeline_root": "/data/out",
+  "classes": ["SSC", "SP"],
+  "stats": "size",
+  "cap_min": 22000,
+  "cap_max": 75000,
+  "default_suffix": ".final.vcf.gz",
+  "class_suffix_overrides": { "SP": ".denovo.final.vcf.gz" },
+  "suffix_per_class": {
+    "SSC": ".final.vcf.gz",
+    "SP": ".denovo.final.vcf.gz",
+    "unmatched": ".final.vcf.gz"
+  },
+  "suffix_filtering_enabled": true,
+  "class_names": ["SSC", "SP", "unmatched"],
+  "class_map": "stage1_patient_ids_by_class.json",
+  "filtered_class_map": "stage1_patient_ids_by_class_filtered_22000_75000.json"
+}
+```
+
+Stage 2 and stage 3 load this file automatically (when present) to pick the filtered class map caps; stage 2 also uses `suffix_per_class` and `class_names` from it.
 
 ## Stage 2
 
 `--output-dir` is the **pipeline root** (writes under `<output-dir>/stage2/`).  
-`--class-map-json` is **optional**; default is `<output-dir>/stage1/stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json` (same `--cap-min` / `--cap-max` as stage 1, defaults 22000 / 75000).
+`--class-map-json` is **optional**; default is `<output-dir>/stage1/stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json`. When `stage1_parameters.json` exists, stage 2/3 use the caps recorded there for that default path.
 
-Use stage 1 class map, one default suffix for all classes:
+Stage 2 reads **suffixes and the default class list** from `<output-dir>/stage1/stage1_parameters.json` (written by stage 1). You do not pass `--suffix` or `--class-suffix` to stage 2.
+
+Use `--classes` to process only a subset (comma-separated class names, e.g. `SSC,ABC`). If omitted, all classes listed in the stage 1 parameters file (present in the filtered class map) are processed.
 
 ```bash
 make-vcf stage2 \
   --input-dir /data/in \
   --output-dir /data/out \
-  --suffix vcf.gz \
   --batch-size 1000
 ```
 
-Run only selected classes in stage 2:
+Process only selected classes:
 
 ```bash
 make-vcf stage2 \
   --input-dir /data/in \
   --output-dir /data/out \
-  --suffix vcf.gz \
-  --classes-to-process SSC,ABC
+  --classes SSC,ABC
 ```
 
-Per-class suffix override:
-
-```bash
-make-vcf stage2 \
-  --input-dir /data/in \
-  --output-dir /data/out \
-  --suffix vcf.gz \
-  --class-suffix SSC=vcf.gz \
-  --class-suffix ABC=vcf \
-  --batch-size 1000
-```
-
-You can also provide a comma-separated list in one argument:
-
-```bash
---class-suffix SSC=vcf.gz,ABC=vcf
-```
-
-Expected file pattern:
+Expected file pattern (suffix per class comes from stage 1 parameters):
 - `input_dir/patient_id/patient_id.<suffix>`
 
 Batch outputs (depends on `--task` and save flags):
+- `stage2_parameters.json` (run parameters: task, suffixes per class, batch size, etc.)
 - `class_<name>/batch_00001_dVars.pkl`
 - `class_<name>/batch_00001_dVars_inh.pkl`
 - `class_<name>/patient_dVars_counts.json` (variant records per patient for the class, written once after all batches)
@@ -204,6 +241,7 @@ Outputs (under the chosen stage3 run directory, one set per class):
 
 ```
 stage3_vN/
+  stage3_parameters.json  # run parameters: task, caps per class, snv/filter settings
   class_SSC/
     chr1/variants.vcf
     chr2/variants.vcf
@@ -218,17 +256,26 @@ Each `stage3_summary.json` includes `patient_variant_cap` (the cap applied to th
 
 ## Run all stages
 
+Combined commands (`run12`, `run123`, `run.py`) pass stage 1 settings to later stages automatically:
+
+- **Stage 2** uses suffixes and the default class list from stage 1 (in memory when stage 1 ran in the same command, otherwise from `stage1_parameters.json`).
+- **Stage 3** uses the same class list as stage 2 (in memory when stage 2 ran in the same command, otherwise from `stage2_parameters.json`), unless `--classes-to-process` overrides.
+
+Optional: restrict stage 2 with `--stage2-classes`; stage 3 will match unless `--classes-to-process` is set.
+
 ```bash
 make-vcf run123 \
   --input-dir /data/in \
   --output-dir /data/out \
-  --prefixes SSC,ABC \
+  --classes SSC,ABC \
   --suffix vcf.gz \
   --class-suffix ABC=vcf \
   --batch-size 1000 \
   --denovo-cap 100 \
   --class-cap SSC=80
 ```
+
+(`--classes` applies to stage 1; `--suffix` / `--class-suffix` apply to stage 1 only. Stage 2 and stage 3 pick up classes and suffixes from the stage 1 parameters file automatically in the same command. Use `--stage2-classes` in `run12`/`run123`/`run.py` to limit stage 2 to a subset; stage 3 then follows stage 2's classes unless `--classes-to-process` overrides.)
 
 Optional: restrict stage 3 to a subset of classes (writes `/data/out/stage3_SSC_ABC_v0/`, etc.). Add to the `run123` command:
 
@@ -247,7 +294,7 @@ python run.py \
   --run-stage3 \
   --input-dir /data/in \
   --output-dir /data/out \
-  --prefixes SSC,ABC \
+  --classes SSC,ABC \
   --suffix vcf.gz \
   --class-suffix ABC=vcf \
   --batch-size 1000 \

@@ -9,6 +9,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Tuple
 
+from .stage1 import load_class_map
+
 HIST_BIN_COUNT = 100
 AB_GT_KEYS = ("00", "01", "11")
 GT_TO_AB_KEY = {"0/0": "00", "0/1": "01", "1/1": "11"}
@@ -291,8 +293,6 @@ def chunked(items: Iterable[str], size: int) -> Iterator[List[str]]:
 
 
 def load_stage1_class_map(path: Path) -> Dict[str, List[str]]:
-    from .stage1 import load_class_map
-
     return load_class_map(explicit=path)
 
 
@@ -350,8 +350,86 @@ class Stage2ClassSummary:
 
 @dataclass(frozen=True)
 class Stage2Result:
+    output_dir: Path
+    parameters_json: Path
     outputs: List[BatchOutput]
     class_summaries: List[Stage2ClassSummary]
+
+
+STAGE2_PARAMETERS_FILENAME = "stage2_parameters.json"
+STAGE2_PARAMETERS_VERSION = 1
+
+
+@dataclass(frozen=True)
+class Stage2Parameters:
+    classes: List[str]
+    suffix_per_class: Dict[str, str]
+    input_dir: Path | None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, object]) -> Stage2Parameters:
+        return cls(
+            classes=[str(c) for c in data.get("classes", [])],
+            suffix_per_class={
+                str(k): str(v) for k, v in dict(data.get("suffix_per_class", {})).items()
+            },
+            input_dir=Path(str(data["input_dir"])) if data.get("input_dir") else None,
+        )
+
+
+def stage2_parameters_path(pipeline_root: Path) -> Path:
+    return pipeline_root / "stage2" / STAGE2_PARAMETERS_FILENAME
+
+
+def try_load_stage2_parameters(pipeline_root: Path) -> Stage2Parameters | None:
+    path = stage2_parameters_path(pipeline_root)
+    if not path.is_file():
+        return None
+    return Stage2Parameters.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+def build_stage2_parameters_payload(
+    *,
+    input_dir: Path,
+    output_dir: Path,
+    stage1_parameters_path: Path,
+    task: str,
+    batch_size: int,
+    classes: List[str],
+    save_inh: bool,
+    save_denovo: bool,
+    use_ext_denovo: bool,
+    write_hist: bool,
+    collect_denovo: bool,
+    collect_inherited: bool,
+    suffix_per_class: Dict[str, str],
+) -> Dict[str, object]:
+    return {
+        "version": STAGE2_PARAMETERS_VERSION,
+        "input_dir": str(input_dir.resolve()),
+        "output_dir": str(output_dir.resolve()),
+        "stage1_parameters": stage1_parameters_path.name,
+        "stage1_parameters_path": str(stage1_parameters_path.resolve()),
+        "task": task,
+        "batch_size": batch_size,
+        "classes": classes,
+        "save_inh": save_inh,
+        "save_denovo": save_denovo,
+        "use_ext_denovo": use_ext_denovo,
+        "write_hist": write_hist,
+        "collect_denovo": collect_denovo,
+        "collect_inherited": collect_inherited,
+        "suffix_per_class": dict(sorted(suffix_per_class.items())),
+    }
+
+
+def print_stage2_summary(result: Stage2Result, *, task: str) -> None:
+    print(f"[stage2 summary] task={task} output={result.output_dir}")
+    for row in result.class_summaries:
+        print(
+            f"  {row.class_name}: mean_variants_per_patient={row.mean_variants_per_patient:.4f} "
+            f"stdev={row.stdev_variants_per_patient:.4f}"
+        )
 
 
 def _variants_per_patient_stats(counts: List[int]) -> tuple[float, float]:
@@ -362,15 +440,6 @@ def _variants_per_patient_stats(counts: List[int]) -> tuple[float, float]:
     return mean, stdev
 
 
-def print_stage2_summary(result: Stage2Result, *, task: str) -> None:
-    print(f"[stage2 summary] task={task}")
-    for row in result.class_summaries:
-        print(
-            f"  {row.class_name}: mean_variants_per_patient={row.mean_variants_per_patient:.4f} "
-            f"stdev={row.stdev_variants_per_patient:.4f}"
-        )
-
-
 def build_file_path(input_dir: Path, patient_id: str, suffix: str) -> Path:
     return input_dir / patient_id / f"{patient_id}.{suffix.lstrip('.')}"
 
@@ -379,15 +448,15 @@ def run_stage2(
     input_dir: Path,
     output_dir: Path,
     class_map: Dict[str, List[str]],
-    default_suffix: str | None,
-    class_to_suffix: Dict[str, str],
+    suffix_per_class: Dict[str, str],
+    classes: List[str],
     batch_size: int = 1000,
     task: str = "denovo",
-    classes_to_process: List[str] | None = None,
     save_inh: bool = False,
     save_denovo: bool = False,
     use_ext_denovo: bool = False,
     write_hist: bool = True,
+    stage1_parameters_path: Path | None = None,
 ) -> Stage2Result:
     if task not in ("denovo", "inherited"):
         raise ValueError("task must be 'denovo' or 'inherited'")
@@ -403,18 +472,15 @@ def run_stage2(
     outputs: List[BatchOutput] = []
     class_summaries: List[Stage2ClassSummary] = []
 
-    if classes_to_process:
-        missing = [c for c in classes_to_process if c not in class_map]
-        if missing:
-            raise ValueError(
-                f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
-            )
-        class_items = [(k, class_map[k]) for k in classes_to_process]
-    else:
-        class_items = list(class_map.items())
+    missing = [c for c in classes if c not in class_map]
+    if missing:
+        raise ValueError(
+            f"Unknown class(es) for stage2: {missing}. Known classes: {sorted(class_map.keys())}"
+        )
+    class_items = [(class_name, class_map[class_name]) for class_name in classes]
 
     for class_name, patient_ids in class_items:
-        suffix = class_to_suffix.get(class_name, default_suffix)
+        suffix = suffix_per_class.get(class_name)
         if not suffix:
             raise ValueError(f"No suffix provided for class '{class_name}'")
 
@@ -544,4 +610,36 @@ def run_stage2(
             )
         )
 
-    return Stage2Result(outputs=outputs, class_summaries=class_summaries)
+    if stage1_parameters_path is None:
+        raise ValueError("stage1_parameters_path is required for stage2 parameter recording")
+
+    parameters_json = output_dir / STAGE2_PARAMETERS_FILENAME
+    parameters_json.write_text(
+        json.dumps(
+            build_stage2_parameters_payload(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                stage1_parameters_path=stage1_parameters_path,
+                task=task,
+                batch_size=batch_size,
+                classes=classes,
+                save_inh=save_inh,
+                save_denovo=save_denovo,
+                use_ext_denovo=use_ext_denovo,
+                write_hist=write_hist,
+                collect_denovo=collect_denovo,
+                collect_inherited=collect_inherited,
+                suffix_per_class={name: suffix_per_class[name] for name in classes},
+            ),
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    return Stage2Result(
+        output_dir=output_dir,
+        parameters_json=parameters_json,
+        outputs=outputs,
+        class_summaries=class_summaries,
+    )

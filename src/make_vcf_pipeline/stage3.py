@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List
 
-from .stage2 import merge
+from .stage2 import merge, try_load_stage2_parameters
 
 
 VarsMap = Dict[str, List[str]]
@@ -42,6 +42,42 @@ def parse_classes_to_process(entries: List[str]) -> List[str]:
                 seen.add(name)
                 out.append(name)
     return out
+
+
+def resolve_stage3_classes(
+    class_map: Dict[str, List[str]],
+    *,
+    classes_override: List[str] | None = None,
+    stage2_classes: List[str] | None = None,
+    pipeline_root: Path | None = None,
+) -> List[str]:
+    """
+    Choose class names for a stage3 run.
+
+    Priority: explicit override > stage2 classes from same session > stage2_parameters.json > all in class_map.
+    """
+    if classes_override:
+        missing = [c for c in classes_override if c not in class_map]
+        if missing:
+            raise ValueError(
+                f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
+            )
+        return classes_override
+
+    if stage2_classes:
+        selected = [c for c in stage2_classes if c in class_map]
+        if not selected:
+            raise ValueError("No stage2 classes found in the class map for stage3.")
+        return selected
+
+    if pipeline_root is not None:
+        stage2_params = try_load_stage2_parameters(pipeline_root)
+        if stage2_params and stage2_params.classes:
+            selected = [c for c in stage2_params.classes if c in class_map]
+            if selected:
+                return selected
+
+    return sorted(class_map.keys())
 
 
 def resolve_stage3_stem(
@@ -499,7 +535,65 @@ class Stage3Result:
     classes_processed: int
     variants_kept: int
     output_dir: Path
+    parameters_json: Path
     class_summaries: List[Stage3ClassSummary]
+
+
+STAGE3_PARAMETERS_FILENAME = "stage3_parameters.json"
+STAGE3_PARAMETERS_VERSION = 1
+
+
+def build_cap_per_class(
+    class_map: Dict[str, List[str]],
+    default_cap: int | None,
+    class_to_cap: Dict[str, int],
+) -> Dict[str, int]:
+    resolved: Dict[str, int] = {}
+    for class_name in class_map:
+        cap = class_to_cap.get(class_name, default_cap)
+        if cap is not None:
+            resolved[class_name] = cap
+    return dict(sorted(resolved.items()))
+
+
+def build_stage3_parameters_payload(
+    *,
+    stage2_dir: Path,
+    output_dir: Path,
+    task: str,
+    default_cap: int | None,
+    class_to_cap: Dict[str, int],
+    cap_per_class: Dict[str, int],
+    snv_only: bool,
+    filter_caps: FilterCaps | None,
+    class_names: List[str],
+    classes_processed: int,
+    variants_kept: int,
+) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "version": STAGE3_PARAMETERS_VERSION,
+        "stage2_dir": str(stage2_dir.resolve()),
+        "output_dir": output_dir.name,
+        "output_path": str(output_dir.resolve()),
+        "task": task,
+        "default_cap": default_cap,
+        "class_cap_overrides": dict(sorted(class_to_cap.items())),
+        "cap_per_class": cap_per_class,
+        "snv_only": snv_only,
+        "filter_enabled": filter_caps is not None,
+        "class_names": class_names,
+        "classes_processed": classes_processed,
+        "variants_kept": variants_kept,
+    }
+    if filter_caps is not None:
+        payload["filter_caps"] = {
+            "dp_cap": filter_caps.dp_cap,
+            "qt_cap": filter_caps.qt_cap,
+            "ab_cap_hom0": filter_caps.ab_cap_hom0,
+            "ab_cap_hom1": filter_caps.ab_cap_hom1,
+            "ab_cap_het": filter_caps.ab_cap_het,
+        }
+    return payload
 
 
 def print_stage3_summary(result: Stage3Result, *, task: str) -> None:
@@ -644,9 +738,33 @@ def run_stage3(
         )
         classes_processed += 1
 
+    cap_per_class = build_cap_per_class(class_map, default_cap, class_to_cap)
+    parameters_json = output_dir / STAGE3_PARAMETERS_FILENAME
+    parameters_json.write_text(
+        json.dumps(
+            build_stage3_parameters_payload(
+                stage2_dir=stage2_dir,
+                output_dir=output_dir,
+                task=task,
+                default_cap=default_cap,
+                class_to_cap=class_to_cap,
+                cap_per_class=cap_per_class,
+                snv_only=snv_only,
+                filter_caps=filter_caps,
+                class_names=sorted(class_map.keys()),
+                classes_processed=classes_processed,
+                variants_kept=variants_kept_total,
+            ),
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
     return Stage3Result(
         classes_processed=classes_processed,
         variants_kept=variants_kept_total,
         output_dir=output_dir,
+        parameters_json=parameters_json,
         class_summaries=class_summaries,
     )
