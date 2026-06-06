@@ -130,6 +130,10 @@ def filtered_class_map_filename(cap_min: int, cap_max: int) -> str:
     return f"stage1_patient_ids_by_class_filtered_{cap_min}_{cap_max}.json"
 
 
+def stage1_class_dir(stage1_dir: Path, class_name: str) -> Path:
+    return stage1_dir / f"class_{class_name}"
+
+
 def stage1_class_map_path(pipeline_root: Path) -> Path:
     return pipeline_root / STAGE1_SUBDIR / CLASS_MAP_FILENAME
 
@@ -246,6 +250,7 @@ def resolve_file_suffix_for_class(
 
 @dataclass(frozen=True)
 class Stage2RunConfig:
+    input_dir: Path
     suffix_per_class: Dict[str, str]
     classes: List[str]
 
@@ -258,7 +263,7 @@ def resolve_stage2_run_config(
     stage1_params: Stage1Parameters | None = None,
 ) -> Stage2RunConfig:
     """
-    Load suffixes and class list for stage2 from stage1 parameters.
+    Load input_dir, suffixes, and class list for stage2 from stage1 parameters.
 
     When classes_override is empty/None, use class_names from stage1 parameters
     restricted to keys present in class_map.
@@ -300,7 +305,11 @@ def _resolve_stage2_run_config_from_params(
             raise ValueError(
                 f"No suffix in stage1 parameters for class(es): {missing_suffix}"
             )
-        return Stage2RunConfig(suffix_per_class=suffix_per_class, classes=classes_override)
+        return Stage2RunConfig(
+            input_dir=params.input_dir,
+            suffix_per_class=suffix_per_class,
+            classes=classes_override,
+        )
 
     default_classes = [c for c in params.class_names if c in class_map]
     if not default_classes:
@@ -311,7 +320,11 @@ def _resolve_stage2_run_config_from_params(
         raise ValueError(
             f"No suffix in stage1 parameters for class(es): {missing_suffix}"
         )
-    return Stage2RunConfig(suffix_per_class=suffix_per_class, classes=default_classes)
+    return Stage2RunConfig(
+        input_dir=params.input_dir,
+        suffix_per_class=suffix_per_class,
+        classes=default_classes,
+    )
 
 
 def load_stage1_parameters_from_result(result: Stage1Result) -> Stage1Parameters:
@@ -399,10 +412,6 @@ def resolve_stage2_input_dir(explicit: Path | None, pipeline_root: Path) -> Path
     if explicit is not None:
         return explicit
     return pipeline_root / STAGE2_SUBDIR
-
-
-def suffix_label(suffix: str) -> str:
-    return suffix.lstrip(".").replace(".", "_").replace("/", "_")
 
 
 def build_patient_file_path(input_dir: Path, patient_id: str, suffix: str) -> Path:
@@ -497,8 +506,12 @@ def run_stage1(
         json.dump(classes_to_patients, f, indent=2, sort_keys=True)
 
     for class_name, patient_ids in classes_to_patients.items():
-        txt_path = stage1_dir / f"stage1_{class_name}_patient_ids.txt"
-        txt_path.write_text("\n".join(patient_ids) + ("\n" if patient_ids else ""), encoding="utf-8")
+        class_dir = stage1_class_dir(stage1_dir, class_name)
+        class_dir.mkdir(parents=True, exist_ok=True)
+        (class_dir / "patient_ids.txt").write_text(
+            "\n".join(patient_ids) + ("\n" if patient_ids else ""),
+            encoding="utf-8",
+        )
 
     stats_json_paths: Dict[str, Path] = {}
     mtime_json_paths: Dict[str, Path] = {}
@@ -513,32 +526,33 @@ def run_stage1(
             if not suffix:
                 raise ValueError(f"No suffix provided for class '{class_name}'")
 
-            label = f"{class_name}_{suffix_label(suffix)}"
+            class_dir = stage1_class_dir(stage1_dir, class_name)
+            class_dir.mkdir(parents=True, exist_ok=True)
             stats_dict, mtime_dict, missed, small, huge, sizes = process_patients_for_suffix(
                 input_dir, patient_ids, suffix, stats, cap_min, cap_max
             )
 
-            stats_path = stage1_dir / f"stage1_stats_{stats}_{label}.json"
+            stats_path = class_dir / f"stats_{stats}.json"
             stats_path.write_text(json.dumps(stats_dict, indent=2, sort_keys=True), encoding="utf-8")
-            stats_json_paths[label] = stats_path
+            stats_json_paths[class_name] = stats_path
 
-            mtime_path = stage1_dir / f"stage1_stats_mtime_{label}.json"
+            mtime_path = class_dir / "stats_mtime.json"
             mtime_path.write_text(json.dumps(mtime_dict, indent=2, sort_keys=True), encoding="utf-8")
-            mtime_json_paths[label] = mtime_path
+            mtime_json_paths[class_name] = mtime_path
 
-            missed_path = stage1_dir / f"{label}.missed.txt"
+            missed_path = class_dir / "missed.txt"
             missed_path.write_text(
                 "\n".join(sorted(missed)) + ("\n" if missed else ""),
                 encoding="utf-8",
             )
-            missed_txt_paths[label] = missed_path
+            missed_txt_paths[class_name] = missed_path
 
-            small_path = stage1_dir / f"{label}.small_{cap_min}.txt"
+            small_path = class_dir / f"small_{cap_min}.txt"
             small_path.write_text(
                 "\n".join(sorted(small)) + ("\n" if small else ""),
                 encoding="utf-8",
             )
-            small_txt_paths[label] = small_path
+            small_txt_paths[class_name] = small_path
 
             filtered_classes[class_name] = filter_class_by_sizes(
                 patient_ids, sizes, cap_min, cap_max

@@ -63,7 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-stage3", action="store_true", help="Execute stage 3")
 
     # Shared paths
-    parser.add_argument("--input-dir", type=Path, required=True, help="Input directory with patient subdirs")
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=None,
+        help="Input directory with patient subdirs (required for stage1 and stage2).",
+    )
     parser.add_argument("--output-dir", type=Path, required=True, help="Root output directory")
 
     # Stage 1 parameters
@@ -171,6 +176,12 @@ def build_parser() -> argparse.ArgumentParser:
         "Use --no-autosomal to include chrX, chrY, and chrM.",
     )
     parser.add_argument(
+        "--stage3-nostats",
+        action="store_true",
+        help="Stage3: skip class-level patient_variant_counts.json and variant_patient_counts.json. "
+        "Per-chromosome variant_patients.json is always written.",
+    )
+    parser.add_argument(
         "--filter",
         action="store_true",
         help="Stage3: after per-patient cap, apply is_good QC on mother, father, and child.",
@@ -195,6 +206,9 @@ def main() -> None:
 
     if not (args.run_stage1 or args.run_stage2 or args.run_stage3):
         raise ValueError("Select at least one stage flag: --run-stage1/--run-stage2/--run-stage3")
+
+    if (args.run_stage1 or args.run_stage2) and args.input_dir is None:
+        raise ValueError("--input-dir is required when running stage1 or stage2")
 
     stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
 
@@ -247,7 +261,7 @@ def main() -> None:
         stage2_classes = stage2_config.classes
         stage2_collect_used = args.collect or "denovo"
         stage2_result = run_stage2(
-            input_dir=args.input_dir,
+            input_dir=stage2_config.input_dir,
             output_dir=stage2_out_dir,
             class_map=class_map,
             suffix_per_class=stage2_config.suffix_per_class,
@@ -301,6 +315,7 @@ def main() -> None:
             snv_only=args.snv,
             autosomal=args.autosomal,
             collect=collect,
+            write_stats=not args.stage3_nostats,
         )
         print(f"[stage3] done -> {stage3_result.output_dir}")
         print(f"[stage3] parameters -> {stage3_result.parameters_json}")

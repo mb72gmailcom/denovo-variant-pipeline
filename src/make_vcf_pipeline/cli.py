@@ -114,6 +114,15 @@ def _add_stage3_autosomal_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_stage3_stats_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--stage3-nostats",
+        action="store_true",
+        help="Stage3: skip class-level patient_variant_counts.json and variant_patient_counts.json. "
+        "Per-chromosome variant_patients.json is always written.",
+    )
+
+
 def _add_stage3_filter_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--filter",
@@ -217,7 +226,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cap_args(p1)
 
     p2 = subparsers.add_parser("stage2", help="Process patient files in batches")
-    p2.add_argument("--input-dir", type=Path, required=True)
     p2.add_argument(
         "--output-dir",
         type=Path,
@@ -281,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=Path,
         required=True,
-        help="Pipeline output root; stage3 writes under stage3_vN/ or stage3_<classes>_vN/ (denovo), or stage3_inherited_vN/...",
+        help="Pipeline output root; stage3 writes under stage3_vN/ (denovo) or stage3_inherited_vN/ (inherited).",
     )
     p3.add_argument("--class-map-json", type=Path, default=None)
     p3.add_argument(
@@ -301,6 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cap_args(p3)
     _add_stage3_snv_args(p3)
     _add_stage3_autosomal_args(p3)
+    _add_stage3_stats_args(p3)
     _add_stage3_filter_args(p3)
 
     p123 = subparsers.add_parser("run123", help="Run stage1, stage2, then stage3")
@@ -330,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_stage2_hist_args(p123)
     _add_stage3_snv_args(p123)
     _add_stage3_autosomal_args(p123)
+    _add_stage3_stats_args(p123)
     _add_stage3_filter_args(p123)
     return parser
 
@@ -419,6 +429,7 @@ def _run_stage3_from_context(
         snv_only=args.snv,
         autosomal=args.autosomal,
         collect=collect,
+        write_stats=not args.stage3_nostats,
     )
     return result, collect
 
@@ -466,7 +477,7 @@ def main() -> None:
         )
         stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
         stage2_result = run_stage2(
-            input_dir=args.input_dir,
+            input_dir=stage2_config.input_dir,
             output_dir=stage2_out_dir,
             class_map=class_map,
             suffix_per_class=stage2_config.suffix_per_class,
@@ -507,7 +518,7 @@ def main() -> None:
         )
         stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
         stage2_result = run_stage2(
-            input_dir=args.input_dir,
+            input_dir=stage2_config.input_dir,
             output_dir=stage2_out_dir,
             class_map=stage1_result.filtered_classes_to_patients,
             suffix_per_class=stage2_config.suffix_per_class,
@@ -566,7 +577,7 @@ def main() -> None:
             stage1_params_path=stage1_result.parameters_json,
         )
         stage2_result = run_stage2(
-            input_dir=args.input_dir,
+            input_dir=stage2_config.input_dir,
             output_dir=stage2_dir,
             class_map=filtered_map,
             suffix_per_class=stage2_config.suffix_per_class,

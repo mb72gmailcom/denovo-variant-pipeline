@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Collection, Dict, Iterable, List
 
-from .stage2 import merge, try_load_stage2_parameters
+from .stage2 import build_patient_counts_json, merge, try_load_stage2_parameters
 
 
 VarsMap = Dict[str, List[str]]
@@ -122,32 +122,11 @@ def resolve_stage3_collect(
     )
 
 
-def resolve_stage3_stem(
-    class_map: Dict[str, List[str]],
-    classes_to_process: List[str],
-    collect: str = "denovo",
-) -> str:
-    """Base directory name before ``_vN`` (e.g. ``stage3``, ``stage3_SSC_ABC``)."""
+def resolve_stage3_stem(collect: str = "denovo") -> str:
+    """Base directory name before ``_vN`` (``stage3`` or ``stage3_inherited``)."""
     if collect not in ("denovo", "inherited"):
         raise ValueError("collect must be 'denovo' or 'inherited'")
-
-    base = "stage3" if collect == "denovo" else "stage3_inherited"
-
-    if not classes_to_process:
-        return base
-
-    missing = [c for c in classes_to_process if c not in class_map]
-    if missing:
-        raise ValueError(
-            f"Unknown --stage3-classes: {missing}. Known classes: {sorted(class_map.keys())}"
-        )
-
-    selected_keys = set(classes_to_process)
-    if selected_keys == set(class_map.keys()):
-        return base
-
-    tag = "_".join(sorted(selected_keys))
-    return f"{base}_{tag}"
+    return "stage3" if collect == "denovo" else "stage3_inherited"
 
 
 def allocate_monotonic_versioned_dir(output_root: Path, stem: str) -> tuple[Path, int]:
@@ -184,7 +163,7 @@ def resolve_stage3_output(
     """
     Choose classes and a versioned output directory under output_root.
 
-    Stems: ``stage3``, ``stage3_inherited``, ``stage3_<classes>``, ``stage3_inherited_<classes>``.
+    Stems: ``stage3`` or ``stage3_inherited`` (class subset does not affect the name).
     Each run writes to ``{stem}_vN`` with N = max(existing N) + 1 (monotonic; gaps are not reused).
     """
     if not classes_to_process:
@@ -197,7 +176,7 @@ def resolve_stage3_output(
             )
         class_map_run = {k: class_map[k] for k in classes_to_process}
 
-    stem = resolve_stage3_stem(class_map, classes_to_process, collect=collect)
+    stem = resolve_stage3_stem(collect=collect)
     output_dir, _version = allocate_monotonic_versioned_dir(output_root, stem)
     return class_map_run, output_dir
 
@@ -256,6 +235,42 @@ def denovo_counts_by_patient(dvars: VarsMap) -> Dict[str, int]:
             patient_id = v.split("-")[0]
             counts[patient_id] = counts.get(patient_id, 0) + 1
     return counts
+
+
+def variant_patient_counts(dvars: VarsMap) -> Dict[str, int]:
+    return {key: len(values) for key, values in sorted(dvars.items())}
+
+
+def patients_per_variant_for_keys(dvars: VarsMap, keys: List[str]) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    for key in keys:
+        values = dvars.get(key)
+        if not values:
+            continue
+        patients = sorted({v.split("-", 1)[0] for v in values if v})
+        if patients:
+            out[key] = patients
+    return out
+
+
+def write_class_level_stage3_stats(
+    class_dir: Path,
+    *,
+    patient_ids: List[str],
+    dvars_filtered: VarsMap,
+) -> None:
+    (class_dir / "patient_variant_counts.json").write_text(
+        json.dumps(
+            build_patient_counts_json(patient_ids, denovo_counts_by_patient(dvars_filtered)),
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    (class_dir / "variant_patient_counts.json").write_text(
+        json.dumps(variant_patient_counts(dvars_filtered), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 @dataclass(frozen=True)
@@ -525,6 +540,12 @@ def write_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str, List[str]
             if prev_row is not None:
                 f.write("\t".join(prev_row) + "\n")
 
+        variant_patients = patients_per_variant_for_keys(dvars, keys)
+        (chrom_dir / "variant_patients.json").write_text(
+            json.dumps(variant_patients, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
 
 def is_transition(ref: str, alt: str) -> bool:
     return (ref.upper(), alt.upper()) in TRANSITION_PAIRS
@@ -642,6 +663,7 @@ def build_stage3_parameters_payload(
     class_names: List[str],
     classes_processed: int,
     variants_kept: int,
+    write_stats: bool,
 ) -> Dict[str, object]:
     payload: Dict[str, object] = {
         "version": STAGE3_PARAMETERS_VERSION,
@@ -655,6 +677,7 @@ def build_stage3_parameters_payload(
         "snv_only": snv_only,
         "autosomal": autosomal,
         "chromosomes": chromosomes,
+        "write_stats": write_stats,
         "filter_enabled": filter_caps is not None,
         "class_names": class_names,
         "classes_processed": classes_processed,
@@ -709,9 +732,18 @@ def _write_class_stage3_outputs(
     chromosomes: List[str],
     filter_caps: FilterCaps | None,
     filter_steps: List[FilterStepCount],
+    patient_ids: List[str],
+    write_stats: bool,
 ) -> None:
     class_dir.mkdir(parents=True, exist_ok=True)
     write_vcf(dvars_filtered, class_dir, dchr_sorted)
+
+    if write_stats:
+        write_class_level_stage3_stats(
+            class_dir,
+            patient_ids=patient_ids,
+            dvars_filtered=dvars_filtered,
+        )
 
     titv_summary = compute_titv_summary(dchr_sorted, chromosomes)
     (class_dir / "stage3_titv.json").write_text(
@@ -759,6 +791,7 @@ def run_stage3(
     autosomal: bool = True,
     extra_filters: Iterable[ExtraFilter] | None = None,
     collect: str = "denovo",
+    write_stats: bool = True,
 ) -> Stage3Result:
     if collect not in ("denovo", "inherited"):
         raise ValueError("collect must be 'denovo' or 'inherited'")
@@ -806,6 +839,8 @@ def run_stage3(
             chromosomes=chromosomes,
             filter_caps=filter_caps,
             filter_steps=filter_result.steps,
+            patient_ids=class_map[class_name],
+            write_stats=write_stats,
         )
 
         variants_kept_total += variants_left
@@ -840,6 +875,7 @@ def run_stage3(
                 class_names=sorted(class_map.keys()),
                 classes_processed=classes_processed,
                 variants_kept=variants_kept_total,
+                write_stats=write_stats,
             ),
             indent=2,
             sort_keys=True,

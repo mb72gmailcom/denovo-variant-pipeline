@@ -17,7 +17,7 @@ Each stage writes a parameters JSON in its output directory:
 
 | Stage | Path | Used by later stages for |
 |-------|------|--------------------------|
-| 1 | `<output-dir>/stage1/stage1_parameters.json` | Class map caps, suffixes per class |
+| 1 | `<output-dir>/stage1/stage1_parameters.json` | Input dir, class map caps, suffixes per class |
 | 2 | `<output-dir>/stage2/stage2_parameters.json` | Collect bucket, classes, suffixes, batch settings |
 | 3 | `<output-dir>/stage3_vN/stage3_parameters.json` | Caps, SNV/filter settings for the run |
 
@@ -37,11 +37,20 @@ Classed cohort by patient ID prefix:
 make-vcf stage1 --input-dir /data/in --output-dir /data/out --classes SSC,ABC
 ```
 
-Outputs (under `<output-dir>/stage1/`):
+Outputs under `<output-dir>/stage1/`:
+
+**Run root** (three files only):
 - `stage1_patient_ids_by_class.json` (all patients by class)
 - `stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json` (default caps 22000–75000; used by stage 2/3)
 - `stage1_parameters.json` (run parameters: classes, caps, suffixes per class; read by stage 2/3 when CLI flags are omitted)
-- `stage1_<class>_patient_ids.txt`
+
+**Per class** (`class_<name>/`):
+- `patient_ids.txt` — ordered patient IDs for that class
+- When `--suffix` or `--class-suffix` is set (size filtering enabled):
+  - `stats_<size|counts>.json` — per-patient file statistic
+  - `stats_mtime.json` — per-patient modification time (Unix epoch seconds)
+  - `missed.txt` — patient IDs with no file at the expected path
+  - `small_<cap_min>.txt` — patient IDs with file size below `--cap-min`
 
 Size filtering (`--cap-min`, `--cap-max`, defaults 22000 and 75000): when `--suffix` or `--class-suffix` is set, keep a patient only if that class's suffix file exists and its byte size is within `[cap_min, cap_max]`. Without a suffix, the filtered file matches the full class map.
 
@@ -52,11 +61,7 @@ Optional file statistics (when `--suffix` or `--class-suffix` is provided):
 
 Paths checked: `input_dir/<patient_id>/<patient_id>.<suffix>` using the class default (`--suffix`) or per-class override (`--class-suffix`).
 
-One JSON per class for `--stats` (`stage1_stats_size_<class>_<suffix_label>.json` or `stage1_stats_counts_...`) and always for modification time (`stage1_stats_mtime_SSC_final_vcf_gz.json`). Mtime values are Unix epoch seconds (`st_mtime`). Only patients with existing files are included.
-
-Missing files: patient IDs with no file at the expected path are listed in `{class}_{suffix_label}.missed.txt`, e.g. `SSC_final_vcf_gz.missed.txt` (always written; empty if none missing).
-
-Files smaller than `--cap-min`: patient IDs with an existing file below the minimum size cap are listed in `{class}_{suffix_label}.small_{cap_min}.txt`, e.g. `SSC_final_vcf_gz.small_22000.txt` (always written; empty if none).
+Only patients with existing files are included in the stats JSON files.
 
 Example:
 
@@ -119,13 +124,12 @@ Stage 2 and stage 3 load this file automatically (when present) to pick the filt
 `--output-dir` is the **pipeline root** (writes under `<output-dir>/stage2/`).  
 `--class-map-json` is **optional**; default is `<output-dir>/stage1/stage1_patient_ids_by_class_filtered_<cap_min>_<cap_max>.json`. When `stage1_parameters.json` exists, stage 2/3 use the caps recorded there for that default path.
 
-Stage 2 reads **suffixes and the default class list** from `<output-dir>/stage1/stage1_parameters.json` (written by stage 1). You do not pass `--suffix` or `--class-suffix` to stage 2.
+Stage 2 reads **`input_dir`**, **suffixes**, and the default **class list** from `<output-dir>/stage1/stage1_parameters.json` (written by stage 1). You do not pass `--input-dir`, `--suffix`, or `--class-suffix` to stage 2.
 
 Use `--classes` to process only a subset (comma-separated class names, e.g. `SSC,ABC`). If omitted, all classes listed in the stage 1 parameters file (present in the filtered class map) are processed.
 
 ```bash
 make-vcf stage2 \
-  --input-dir /data/in \
   --output-dir /data/out \
   --batch-size 1000
 ```
@@ -134,12 +138,11 @@ Process only selected classes:
 
 ```bash
 make-vcf stage2 \
-  --input-dir /data/in \
   --output-dir /data/out \
   --classes SSC,ABC
 ```
 
-Expected file pattern (suffix per class comes from stage 1 parameters):
+Expected file pattern (paths from stage 1 parameters: `input_dir` and suffix per class):
 - `input_dir/patient_id/patient_id.<suffix>`
 
 Batch outputs (depends on `--collect` and `--save-all`):
@@ -174,10 +177,10 @@ Denovo classification (stage 2):
 Use class map from stage 1 and stage 2 batch outputs.  
 `--output-dir` is the **pipeline root**; results go under a stage3 directory chosen by **`--collect`** (default: value from `stage2_parameters.json`) and optional **`--stage3-classes`**:
 
-- **`collect=denovo`:** read `batch_*_dVars.pkl` per class → `<output-dir>/stage3_vN/` or `<output-dir>/stage3_<classes>_vN/`
-- **`collect=inherited`:** read `batch_*_dVars_inh.pkl` per class → `<output-dir>/stage3_inherited_vN/` or `<output-dir>/stage3_inherited_<classes>_vN/`
+- **`collect=denovo`:** read `batch_*_dVars.pkl` per class → `<output-dir>/stage3_vN/`
+- **`collect=inherited`:** read `batch_*_dVars_inh.pkl` per class → `<output-dir>/stage3_inherited_vN/`
 
-Standalone `make-vcf stage3` reads **`collect`** and **classes** from `stage2/stage2_parameters.json` when those flags are omitted. Pass **`--collect`** or **`--stage3-classes`** to override.
+Standalone `make-vcf stage3` reads **`collect`** and **classes** from `stage2/stage2_parameters.json` when those flags are omitted. Pass **`--collect`** or **`--stage3-classes`** to override. Class subset does not change the output directory name; each run gets the next `stage3_vN` (or `stage3_inherited_vN`).
 
 Each stage3 run uses the next monotonic version `N` for that stem (e.g. `stage3_v0`, then `stage3_v1`; deleted intermediate versions are not reused). Variants are **not** merged across classes; each class is written to its own subdirectory with separate summary files.
 
@@ -205,7 +208,7 @@ make-vcf stage3 \
   --collect inherited
 ```
 
-Process only some classes (e.g. `/data/out/stage3_SSC_ABC_v0/` with `--collect denovo`, or `/data/out/stage3_inherited_SSC_ABC_v0/` with `--collect inherited`):
+Process only some classes (each run still writes to the next `stage3_vN`; classes processed are recorded in `stage3_parameters.json`):
 
 ```bash
 make-vcf stage3 \
@@ -246,8 +249,14 @@ Outputs (under the chosen stage3 run directory, one set per class):
 stage3_vN/
   stage3_parameters.json  # run parameters: collect, autosomal, chromosomes, caps, snv/filter settings
   class_SSC/
-    chr1/variants.vcf
-    chr2/variants.vcf
+    patient_variant_counts.json   # variants per patient (class-level; use --stage3-nostats to skip)
+    variant_patient_counts.json   # patients per variant key (class-level; use --stage3-nostats to skip)
+    chr1/
+      variants.vcf
+      variant_patients.json       # patient IDs per variant on chr1 (always written)
+    chr2/
+      variants.vcf
+      variant_patients.json
     ...
     stage3_summary.json   # cap, snv_only, filter_caps for this class
     stage3_titv.json      # Ti/Tv per chromosome and overall for this class
@@ -280,7 +289,7 @@ make-vcf run123 \
 
 (`--classes` applies to stage 1; `--suffix` / `--class-suffix` apply to stage 1 only. Stage 2 and stage 3 pick up classes and suffixes from the stage 1 parameters file automatically in the same command. Use `--stage2-classes` in `run12`/`run123`/`run.py` to limit stage 2 to a subset; stage 3 then follows stage 2's classes unless `--stage3-classes` overrides.)
 
-Optional: restrict stage 3 to a subset of classes (writes `/data/out/stage3_SSC_ABC_v0/`, etc.). Add to the `run123` command:
+Optional: restrict stage 3 to a subset of classes with `--stage3-classes`. Output still goes to the next `stage3_vN` under the pipeline root. Add to the `run123` command:
 
 ```bash
 --stage3-classes SSC,ABC
@@ -307,6 +316,11 @@ python run.py \
 ```
 
 Run only selected stages by providing only the needed flags:
-- `--run-stage1`
-- `--run-stage2`
-- `--run-stage3`
+- `--run-stage1` and/or `--run-stage2` require `--input-dir`
+- `--run-stage3` does not use `--input-dir` (reads stage2 batch outputs under `--output-dir`)
+
+Stage3-only example:
+
+```bash
+python run.py --run-stage3 --output-dir /data/out --denovo-cap 100
+```
