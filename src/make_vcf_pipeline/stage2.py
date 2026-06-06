@@ -97,7 +97,7 @@ def _bin_ab_ratio(adr: int, ada: int, counts: List[int]) -> None:
 
 @dataclass
 class Stage2HistCollector:
-    """Per-class histograms for variants in the active stage2 task bucket."""
+    """Per-class histograms for variants in the active stage2 collect bucket."""
 
     children_qt: List[int] = field(default_factory=_empty_hist_bins)
     parents_qt: List[int] = field(default_factory=_empty_hist_bins)
@@ -124,7 +124,7 @@ class Stage2HistCollector:
         if ab_key is not None:
             _bin_ab_ratio(adr, ada, self.children_ab[ab_key])
 
-    def write_json_files(self, class_dir: Path, task: str) -> List[Path]:
+    def write_json_files(self, class_dir: Path, collect: str) -> List[Path]:
         written: List[Path] = []
         specs = [
             ("children_qt_hist.json", "children", "qt", None, self.children_qt),
@@ -138,7 +138,7 @@ class Stage2HistCollector:
             path = class_dir / filename
             path.write_text(
                 json.dumps(
-                    _hist_payload(task, role, metric, genotype, counts, integer=True),
+                    _hist_payload(collect, role, metric, genotype, counts, integer=True),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -156,7 +156,7 @@ class Stage2HistCollector:
                 path.write_text(
                     json.dumps(
                         _hist_payload(
-                            task,
+                            collect,
                             role,
                             "ab",
                             ab_suffix,
@@ -173,7 +173,7 @@ class Stage2HistCollector:
 
 
 def _hist_payload(
-    task: str,
+    collect: str,
     role: str,
     metric: str,
     genotype: str | None,
@@ -183,7 +183,7 @@ def _hist_payload(
 ) -> Dict[str, object]:
     payload: Dict[str, object] = {
         "schema": "stage2_hist_v1",
-        "task": task,
+        "collect": collect,
         "role": role,
         "metric": metric,
         "counts": counts,
@@ -364,15 +364,21 @@ STAGE2_PARAMETERS_VERSION = 1
 class Stage2Parameters:
     classes: List[str]
     suffix_per_class: Dict[str, str]
+    collect: str
     input_dir: Path | None
 
     @classmethod
     def from_dict(cls, data: Dict[str, object]) -> Stage2Parameters:
+        raw_collect = data.get("collect") or data.get("task") or "denovo"
+        collect = str(raw_collect)
+        if collect not in ("denovo", "inherited"):
+            raise ValueError(f"Invalid collect in stage2 parameters: {collect!r}")
         return cls(
             classes=[str(c) for c in data.get("classes", [])],
             suffix_per_class={
                 str(k): str(v) for k, v in dict(data.get("suffix_per_class", {})).items()
             },
+            collect=collect,
             input_dir=Path(str(data["input_dir"])) if data.get("input_dir") else None,
         )
 
@@ -388,16 +394,23 @@ def try_load_stage2_parameters(pipeline_root: Path) -> Stage2Parameters | None:
     return Stage2Parameters.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
 
+def resolve_collect_flags(collect: str, save_all: bool) -> tuple[bool, bool]:
+    if collect not in ("denovo", "inherited"):
+        raise ValueError("collect must be 'denovo' or 'inherited'")
+    collect_denovo = collect == "denovo" or save_all
+    collect_inherited = collect == "inherited" or save_all
+    return collect_denovo, collect_inherited
+
+
 def build_stage2_parameters_payload(
     *,
     input_dir: Path,
     output_dir: Path,
     stage1_parameters_path: Path,
-    task: str,
+    collect: str,
+    save_all: bool,
     batch_size: int,
     classes: List[str],
-    save_inh: bool,
-    save_denovo: bool,
     use_ext_denovo: bool,
     write_hist: bool,
     collect_denovo: bool,
@@ -410,11 +423,10 @@ def build_stage2_parameters_payload(
         "output_dir": str(output_dir.resolve()),
         "stage1_parameters": stage1_parameters_path.name,
         "stage1_parameters_path": str(stage1_parameters_path.resolve()),
-        "task": task,
+        "collect": collect,
+        "save_all": save_all,
         "batch_size": batch_size,
         "classes": classes,
-        "save_inh": save_inh,
-        "save_denovo": save_denovo,
         "use_ext_denovo": use_ext_denovo,
         "write_hist": write_hist,
         "collect_denovo": collect_denovo,
@@ -423,8 +435,8 @@ def build_stage2_parameters_payload(
     }
 
 
-def print_stage2_summary(result: Stage2Result, *, task: str) -> None:
-    print(f"[stage2 summary] task={task} output={result.output_dir}")
+def print_stage2_summary(result: Stage2Result, *, collect: str) -> None:
+    print(f"[stage2 summary] collect={collect} output={result.output_dir}")
     for row in result.class_summaries:
         print(
             f"  {row.class_name}: mean_variants_per_patient={row.mean_variants_per_patient:.4f} "
@@ -451,22 +463,13 @@ def run_stage2(
     suffix_per_class: Dict[str, str],
     classes: List[str],
     batch_size: int = 1000,
-    task: str = "denovo",
-    save_inh: bool = False,
-    save_denovo: bool = False,
+    collect: str = "denovo",
+    save_all: bool = False,
     use_ext_denovo: bool = False,
     write_hist: bool = True,
     stage1_parameters_path: Path | None = None,
 ) -> Stage2Result:
-    if task not in ("denovo", "inherited"):
-        raise ValueError("task must be 'denovo' or 'inherited'")
-
-    if task == "denovo":
-        collect_denovo = True
-        collect_inherited = save_inh
-    else:
-        collect_denovo = save_denovo
-        collect_inherited = True
+    collect_denovo, collect_inherited = resolve_collect_flags(collect, save_all)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: List[BatchOutput] = []
@@ -487,13 +490,13 @@ def run_stage2(
         class_dir = output_dir / f"class_{class_name}"
         class_dir.mkdir(parents=True, exist_ok=True)
 
-        # Sidecar lists: denovo task -> patients with non-empty inherited; inherited task -> patients with non-empty denovo.
+        # Sidecar lists: collect=denovo -> patients with non-empty inherited; collect=inherited -> non-empty denovo.
         patients_nonempty_sidecar: set[str] = set()
         class_dvars_counts: Dict[str, int] = {}
         class_dvars_inh_counts: Dict[str, int] = {}
         hist_collector = Stage2HistCollector() if write_hist else None
-        record_hist_denovo = write_hist and task == "denovo"
-        record_hist_inherited = write_hist and task == "inherited"
+        record_hist_denovo = write_hist and collect == "denovo"
+        record_hist_inherited = write_hist and collect == "inherited"
 
         for batch_index, batch_patient_ids in enumerate(chunked(patient_ids, batch_size), start=1):
             dVars: Dict[str, List[str]] = {}
@@ -530,7 +533,7 @@ def run_stage2(
                 if collect_denovo and dvars:
                     batch_patients_nonempty_denovo.add(patient_id)
 
-            if task == "denovo":
+            if collect == "denovo":
                 batch_sidecar = batch_patients_nonempty_inh
                 batch_list_name = f"batch_{batch_index:05d}_patients_nonempty_dvars_inh.txt"
                 class_list_name = "patients_nonempty_dvars_inh.txt"
@@ -597,9 +600,9 @@ def run_stage2(
             )
 
         if hist_collector is not None:
-            hist_collector.write_json_files(class_dir, task=task)
+            hist_collector.write_json_files(class_dir, collect=collect)
 
-        count_map = class_dvars_counts if task == "denovo" else class_dvars_inh_counts
+        count_map = class_dvars_counts if collect == "denovo" else class_dvars_inh_counts
         per_patient = [count_map.get(patient_id, 0) for patient_id in patient_ids]
         mean_v, stdev_v = _variants_per_patient_stats(per_patient)
         class_summaries.append(
@@ -620,11 +623,10 @@ def run_stage2(
                 input_dir=input_dir,
                 output_dir=output_dir,
                 stage1_parameters_path=stage1_parameters_path,
-                task=task,
+                collect=collect,
+                save_all=save_all,
                 batch_size=batch_size,
                 classes=classes,
-                save_inh=save_inh,
-                save_denovo=save_denovo,
                 use_ext_denovo=use_ext_denovo,
                 write_hist=write_hist,
                 collect_denovo=collect_denovo,

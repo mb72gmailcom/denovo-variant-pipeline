@@ -28,8 +28,9 @@ from .stage2 import (
 from .stage3 import (
     filter_caps_from_args,
     parse_class_cap_pairs,
-    parse_classes_to_process,
+    parse_stage3_classes,
     print_stage3_summary,
+    resolve_stage3_collect,
     resolve_stage3_classes,
     resolve_stage3_output,
     run_stage3,
@@ -47,9 +48,38 @@ def _split_csv(value: str) -> List[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _add_collect_args(parser: argparse.ArgumentParser, *, include_save_all: bool) -> None:
+    parser.add_argument(
+        "--collect",
+        choices=("denovo", "inherited"),
+        default="denovo",
+        help="Primary variant bucket: denovo (dVars) or inherited (dVars_inh). "
+        "Stage2: sidecar lists and histograms for the primary bucket. "
+        "Stage3: which batch pickles to merge and output dir prefix (stage3 vs stage3_inherited).",
+    )
+    if include_save_all:
+        parser.add_argument(
+            "--save-all",
+            action="store_true",
+            default=False,
+            help="Stage2: also collect/save the other bucket "
+            "(dVars_inh when collect=denovo, dVars when collect=inherited).",
+        )
+
+
+def _add_stage3_collect_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--collect",
+        choices=("denovo", "inherited"),
+        default=None,
+        help="Stage3: merge batch dVars (denovo) or dVars_inh (inherited) and set output dir prefix. "
+        "Default: collect from stage2/stage2_parameters.json.",
+    )
+
+
 def _add_stage2_hist_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--stage2-nohist",
+        "--stage2-nostats",
         action="store_true",
         help="Stage2: skip qt/dp/ab histogram JSON files (computed by default per class_<name>/).",
     )
@@ -61,6 +91,26 @@ def _add_stage3_snv_args(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Stage3: drop non-SNV variant keys before output (default: enabled). Use --no-snv to disable.",
+    )
+
+
+def _add_stage3_classes_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--stage3-classes",
+        type=str,
+        default="",
+        help="Stage3: optional subset of classes (comma-separated). "
+        "Default: classes from stage2/stage2_parameters.json.",
+    )
+
+
+def _add_stage3_autosomal_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--autosomal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stage3: restrict to autosomal chromosomes (chr1–chr22 only; default: enabled). "
+        "Use --no-autosomal to include chrX, chrY, and chrM.",
     )
 
 
@@ -188,24 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Default: all classes from stage1_parameters.json.",
     )
     p2.add_argument("--batch-size", type=int, default=1000)
-    p2.add_argument(
-        "--task",
-        choices=("denovo", "inherited"),
-        default="denovo",
-        help="denovo: list patients with non-empty inherited (sidecar txt only if non-empty). "
-        "inherited: list patients with non-empty denovo (sidecar txt only if non-empty).",
-    )
-    p2.add_argument(
-        "--save-inh",
-        action="store_true",
-        help="Stage2: with --task denovo, also collect/save dVars_inh.",
-    )
-    p2.add_argument(
-        "--save-denovo",
-        "--save_denovo",
-        action="store_true",
-        help="Stage2: with --task inherited, also collect/save dVars.",
-    )
+    _add_collect_args(p2, include_save_all=True)
     p2.add_argument(
         "--use-ext-denovo",
         action="store_true",
@@ -228,19 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Stage2: optional subset of classes (comma-separated). Default: all from stage1 parameters.",
     )
-    p12.add_argument(
-        "--task",
-        choices=("denovo", "inherited"),
-        default="denovo",
-        help="Stage2 task (same meaning as make-vcf stage2 --task).",
-    )
-    p12.add_argument("--save-inh", action="store_true", help="Run12 stage2: also save inherited while task=denovo.")
-    p12.add_argument(
-        "--save-denovo",
-        "--save_denovo",
-        action="store_true",
-        help="Run12 stage2: also save denovo while task=inherited.",
-    )
+    _add_collect_args(p12, include_save_all=True)
     p12.add_argument(
         "--use-ext-denovo",
         action="store_true",
@@ -275,20 +296,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Per-class denovo cap override. Repeat format class=cap.",
     )
-    p3.add_argument(
-        "--classes-to-process",
-        action="append",
-        default=[],
-        help="Optional: only these classes (comma-separated or repeat). Omit for all classes.",
-    )
-    p3.add_argument(
-        "--task",
-        choices=("denovo", "inherited"),
-        default="denovo",
-        help="denovo: merge batch dVars. inherited: merge batch dVars_inh; output under stage3_inherited_vN/...",
-    )
+    _add_stage3_classes_args(p3)
+    _add_stage3_collect_args(p3)
     _add_cap_args(p3)
     _add_stage3_snv_args(p3)
+    _add_stage3_autosomal_args(p3)
     _add_stage3_filter_args(p3)
 
     p123 = subparsers.add_parser("run123", help="Run stage1, stage2, then stage3")
@@ -307,25 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p123.add_argument("--denovo-cap", type=int, default=None)
     p123.add_argument("--class-cap", action="append", default=[])
-    p123.add_argument(
-        "--classes-to-process",
-        action="append",
-        default=[],
-        help="Optional: only these classes in stage3 (comma-separated or repeat). Omit for all classes.",
-    )
-    p123.add_argument(
-        "--task",
-        choices=("denovo", "inherited"),
-        default="denovo",
-        help="Applies to stage2 (sidecar lists) and stage3 (which pickle set and output dir prefix).",
-    )
-    p123.add_argument("--save-inh", action="store_true", help="Run123 stage2: also save inherited while task=denovo.")
-    p123.add_argument(
-        "--save-denovo",
-        "--save_denovo",
-        action="store_true",
-        help="Run123 stage2: also save denovo while task=inherited.",
-    )
+    _add_stage3_classes_args(p123)
+    _add_collect_args(p123, include_save_all=True)
     p123.add_argument(
         "--use-ext-denovo",
         action="store_true",
@@ -334,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cap_args(p123)
     _add_stage2_hist_args(p123)
     _add_stage3_snv_args(p123)
+    _add_stage3_autosomal_args(p123)
     _add_stage3_filter_args(p123)
     return parser
 
@@ -374,22 +370,44 @@ def _resolve_stage2_run(
     return config, params_path
 
 
+def _stage3_classes_override(args: argparse.Namespace) -> List[str] | None:
+    override = parse_stage3_classes(args.stage3_classes)
+    return override if override else None
+
+
+def _resolve_stage3_collect(
+    args: argparse.Namespace,
+    pipeline_root: Path,
+    *,
+    stage2_collect: str | None = None,
+) -> str:
+    return resolve_stage3_collect(
+        collect_override=args.collect,
+        stage2_collect=stage2_collect,
+        pipeline_root=pipeline_root,
+    )
+
+
 def _run_stage3_from_context(
     args: argparse.Namespace,
     pipeline_root: Path,
     class_map: dict[str, list[str]],
     *,
     stage2_classes: List[str] | None = None,
+    stage2_collect: str | None = None,
     stage2_dir: Path | None = None,
 ):
+    collect = _resolve_stage3_collect(
+        args, pipeline_root, stage2_collect=stage2_collect
+    )
     class_names = resolve_stage3_classes(
         class_map,
-        classes_override=parse_classes_to_process(args.classes_to_process) or None,
+        classes_override=_stage3_classes_override(args),
         stage2_classes=stage2_classes,
         pipeline_root=pipeline_root,
     )
     class_map_run, stage3_dir = resolve_stage3_output(
-        pipeline_root, class_map, class_names, task=args.task
+        pipeline_root, class_map, class_names, collect=collect
     )
     result = run_stage3(
         stage2_dir=stage2_dir or resolve_stage2_input_dir(None, pipeline_root),
@@ -399,9 +417,10 @@ def _run_stage3_from_context(
         class_to_cap=parse_class_cap_pairs(args.class_cap),
         filter_caps=_stage3_filter_caps(args),
         snv_only=args.snv,
-        task=args.task,
+        autosomal=args.autosomal,
+        collect=collect,
     )
-    return result
+    return result, collect
 
 
 def main() -> None:
@@ -453,16 +472,15 @@ def main() -> None:
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
             batch_size=args.batch_size,
-            task=args.task,
-            save_inh=args.save_inh,
-            save_denovo=args.save_denovo,
+            collect=args.collect,
+            save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=not args.stage2_nohist,
+            write_hist=not args.stage2_nostats,
             stage1_parameters_path=stage1_params_path,
         )
         print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
         print(f"Stage2 parameters: {stage2_result.parameters_json}")
-        print_stage2_summary(stage2_result, task=args.task)
+        print_stage2_summary(stage2_result, collect=args.collect)
         return
 
     if args.command == "run12":
@@ -495,18 +513,17 @@ def main() -> None:
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
             batch_size=args.batch_size,
-            task=args.task,
-            save_inh=args.save_inh,
-            save_denovo=args.save_denovo,
+            collect=args.collect,
+            save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=not args.stage2_nohist,
+            write_hist=not args.stage2_nostats,
             stage1_parameters_path=stage1_params_path,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")
         print_stage1_summary(stage1_result)
         print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
         print(f"Stage2 parameters: {stage2_result.parameters_json}")
-        print_stage2_summary(stage2_result, task=args.task)
+        print_stage2_summary(stage2_result, collect=args.collect)
         return
 
     if args.command == "stage3":
@@ -515,12 +532,12 @@ def main() -> None:
             args.class_map_json, pipeline_root, cap_min=args.cap_min, cap_max=args.cap_max
         )
         class_map = load_class_map(explicit=class_map_path)
-        result = _run_stage3_from_context(
+        result, collect = _run_stage3_from_context(
             args, pipeline_root, class_map, stage2_dir=resolve_stage2_input_dir(args.stage2_dir, pipeline_root)
         )
         print(json.dumps(result.__dict__, indent=2, default=str))
         print(f"Stage3 parameters: {result.parameters_json}")
-        print_stage3_summary(result, task=args.task)
+        print_stage3_summary(result, collect=collect)
         return
 
     if args.command == "run123":
@@ -555,28 +572,28 @@ def main() -> None:
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
             batch_size=args.batch_size,
-            task=args.task,
-            save_inh=args.save_inh,
-            save_denovo=args.save_denovo,
+            collect=args.collect,
+            save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=not args.stage2_nohist,
+            write_hist=not args.stage2_nostats,
             stage1_parameters_path=stage1_params_path,
         )
-        stage3_result = _run_stage3_from_context(
+        stage3_result, stage3_collect = _run_stage3_from_context(
             args,
             args.output_dir,
             filtered_map,
             stage2_classes=stage2_config.classes,
+            stage2_collect=args.collect,
             stage2_dir=stage2_dir,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")
         print_stage1_summary(stage1_result)
         print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
         print(f"Stage2 parameters: {stage2_result.parameters_json}")
-        print_stage2_summary(stage2_result, task=args.task)
+        print_stage2_summary(stage2_result, collect=args.collect)
         print(json.dumps(stage3_result.__dict__, indent=2, default=str))
         print(f"Stage3 parameters: {stage3_result.parameters_json}")
-        print_stage3_summary(stage3_result, task=args.task)
+        print_stage3_summary(stage3_result, collect=stage3_collect)
         return
 
 

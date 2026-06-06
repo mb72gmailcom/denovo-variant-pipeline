@@ -5,7 +5,7 @@ import pickle
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List
+from typing import Callable, Collection, Dict, Iterable, List
 
 from .stage2 import merge, try_load_stage2_parameters
 
@@ -17,12 +17,18 @@ ExtraFilter = FilterFn | tuple[str, FilterFn]
 FILTER_STEP_LABELS: Dict[str, str] = {
     "original": "original variants",
     "patient_variant_cap": "after patient variant cap",
+    "chromosome": "after chromosome allowlist",
     "snv_only": "after SNV filter",
     "genotype_qc": "after genotype QC (depth/quality/AB)",
 }
 
 TRANSITION_PAIRS = frozenset({("A", "G"), ("G", "A"), ("T", "C"), ("C", "T")})
-STAGE3_CHROMOSOMES = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
+CHROMOSOMES = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY", "chrM"]
+AUTOSOMAL_CHROMOSOMES = [f"chr{i}" for i in range(1, 23)]
+
+
+def resolve_stage3_chromosomes(*, autosomal: bool) -> List[str]:
+    return list(AUTOSOMAL_CHROMOSOMES if autosomal else CHROMOSOMES)
 
 DEFAULT_FILTER_DP = 20
 DEFAULT_FILTER_QT = 90
@@ -31,16 +37,15 @@ DEFAULT_FILTER_AB_HOM1 = 0.05
 DEFAULT_FILTER_AB_HET = 0.30
 
 
-def parse_classes_to_process(entries: List[str]) -> List[str]:
-    """Flatten repeatable/comma-separated class names; preserve first-seen order, dedupe."""
+def parse_stage3_classes(value: str) -> List[str]:
+    """Parse comma-separated stage3 class names; preserve first-seen order, dedupe."""
     out: List[str] = []
     seen: set[str] = set()
-    for raw in entries:
-        for chunk in raw.split(","):
-            name = chunk.strip()
-            if name and name not in seen:
-                seen.add(name)
-                out.append(name)
+    for chunk in value.split(","):
+        name = chunk.strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
     return out
 
 
@@ -54,13 +59,14 @@ def resolve_stage3_classes(
     """
     Choose class names for a stage3 run.
 
-    Priority: explicit override > stage2 classes from same session > stage2_parameters.json > all in class_map.
+    Priority: explicit --stage3-classes > stage2 classes from same session >
+    stage2_parameters.json. Does not default to all classes in the class map.
     """
     if classes_override:
         missing = [c for c in classes_override if c not in class_map]
         if missing:
             raise ValueError(
-                f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
+                f"Unknown --stage3-classes: {missing}. Known classes: {sorted(class_map.keys())}"
             )
         return classes_override
 
@@ -77,19 +83,55 @@ def resolve_stage3_classes(
             if selected:
                 return selected
 
-    return sorted(class_map.keys())
+    raise ValueError(
+        "No stage3 classes specified. Pass --stage3-classes or run stage2 first "
+        "(stage3 reads classes from stage2/stage2_parameters.json)."
+    )
+
+
+def resolve_stage3_collect(
+    *,
+    collect_override: str | None = None,
+    stage2_collect: str | None = None,
+    pipeline_root: Path | None = None,
+) -> str:
+    """
+    Choose collect bucket for stage3.
+
+    Priority: explicit --collect > stage2 collect from same session >
+    stage2_parameters.json.
+    """
+    if collect_override is not None:
+        if collect_override not in ("denovo", "inherited"):
+            raise ValueError("collect must be 'denovo' or 'inherited'")
+        return collect_override
+
+    if stage2_collect is not None:
+        if stage2_collect not in ("denovo", "inherited"):
+            raise ValueError("collect must be 'denovo' or 'inherited'")
+        return stage2_collect
+
+    if pipeline_root is not None:
+        stage2_params = try_load_stage2_parameters(pipeline_root)
+        if stage2_params is not None:
+            return stage2_params.collect
+
+    raise ValueError(
+        "No stage3 collect specified. Pass --collect or run stage2 first "
+        "(stage3 reads collect from stage2/stage2_parameters.json)."
+    )
 
 
 def resolve_stage3_stem(
     class_map: Dict[str, List[str]],
     classes_to_process: List[str],
-    task: str = "denovo",
+    collect: str = "denovo",
 ) -> str:
     """Base directory name before ``_vN`` (e.g. ``stage3``, ``stage3_SSC_ABC``)."""
-    if task not in ("denovo", "inherited"):
-        raise ValueError("task must be 'denovo' or 'inherited'")
+    if collect not in ("denovo", "inherited"):
+        raise ValueError("collect must be 'denovo' or 'inherited'")
 
-    base = "stage3" if task == "denovo" else "stage3_inherited"
+    base = "stage3" if collect == "denovo" else "stage3_inherited"
 
     if not classes_to_process:
         return base
@@ -97,7 +139,7 @@ def resolve_stage3_stem(
     missing = [c for c in classes_to_process if c not in class_map]
     if missing:
         raise ValueError(
-            f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
+            f"Unknown --stage3-classes: {missing}. Known classes: {sorted(class_map.keys())}"
         )
 
     selected_keys = set(classes_to_process)
@@ -137,7 +179,7 @@ def resolve_stage3_output(
     output_root: Path,
     class_map: Dict[str, List[str]],
     classes_to_process: List[str],
-    task: str = "denovo",
+    collect: str = "denovo",
 ) -> tuple[Dict[str, List[str]], Path]:
     """
     Choose classes and a versioned output directory under output_root.
@@ -151,11 +193,11 @@ def resolve_stage3_output(
         missing = [c for c in classes_to_process if c not in class_map]
         if missing:
             raise ValueError(
-                f"Unknown --classes-to-process: {missing}. Known classes: {sorted(class_map.keys())}"
+                f"Unknown --stage3-classes: {missing}. Known classes: {sorted(class_map.keys())}"
             )
         class_map_run = {k: class_map[k] for k in classes_to_process}
 
-    stem = resolve_stage3_stem(class_map, classes_to_process, task=task)
+    stem = resolve_stage3_stem(class_map, classes_to_process, collect=collect)
     output_dir, _version = allocate_monotonic_versioned_dir(output_root, stem)
     return class_map_run, output_dir
 
@@ -330,29 +372,42 @@ def filter_by_is_good(dvars: VarsMap, caps: FilterCaps) -> VarsMap:
     return filtered
 
 
-def parse_snv_key(key: str) -> tuple[str, str, str] | None:
+def parse_snv_key(key: str, *, allowed_chromosomes: Collection[str]) -> tuple[str, str, str] | None:
     parts = key.split("_")
     if len(parts) < 4:
         return None
     chrom, ref, alt = parts[0], parts[2], parts[3]
-    if chrom not in STAGE3_CHROMOSOMES:
+    if chrom not in allowed_chromosomes:
         return None
     if len(ref) != 1 or len(alt) != 1:
         return None
     return chrom, ref.upper(), alt.upper()
 
 
-def count_snv_variant_keys(dvars: VarsMap) -> int:
+def count_snv_variant_keys(dvars: VarsMap, *, allowed_chromosomes: Collection[str]) -> int:
     """Count variant keys with single-base ref and alt (same rule as VCF / Ti-Tv)."""
-    return sum(1 for key in dvars if parse_snv_key(key) is not None)
+    return sum(1 for key in dvars if parse_snv_key(key, allowed_chromosomes=allowed_chromosomes) is not None)
 
 
 def count_variant_keys(dvars: VarsMap) -> int:
     return len(dvars)
 
 
-def filter_snv_variants(dvars: VarsMap) -> VarsMap:
-    return {key: values for key, values in dvars.items() if parse_snv_key(key) is not None}
+def filter_by_chromosome(dvars: VarsMap, chromosomes: Collection[str]) -> VarsMap:
+    allowed = set(chromosomes)
+    return {
+        key: values
+        for key, values in dvars.items()
+        if (key.split("_", 1)[0] if key else "") in allowed
+    }
+
+
+def filter_snv_variants(dvars: VarsMap, *, allowed_chromosomes: Collection[str]) -> VarsMap:
+    return {
+        key: values
+        for key, values in dvars.items()
+        if parse_snv_key(key, allowed_chromosomes=allowed_chromosomes) is not None
+    }
 
 
 @dataclass(frozen=True)
@@ -384,6 +439,7 @@ def apply_filters(
     dvars: VarsMap,
     denovo_cap: int,
     *,
+    chromosomes: List[str],
     snv_only: bool = True,
     filter_caps: FilterCaps | None = None,
     extra_filters: Iterable[ExtraFilter] | None = None,
@@ -397,12 +453,16 @@ def apply_filters(
     )
     steps.append(FilterStepCount("patient_variant_cap", count_variant_keys(current)))
 
-    # 2) SNV-only variant keys
+    # 2) chromosome allowlist (autosomal-only or full CHROMOSOMES set)
+    current = filter_by_chromosome(current, chromosomes)
+    steps.append(FilterStepCount("chromosome", count_variant_keys(current)))
+
+    # 3) SNV-only variant keys
     if snv_only:
-        current = filter_snv_variants(current)
+        current = filter_snv_variants(current, allowed_chromosomes=chromosomes)
         steps.append(FilterStepCount("snv_only", count_variant_keys(current)))
 
-    # 3) genotype quality (is_good), optional
+    # 4) genotype quality (is_good), optional
     if filter_caps is not None:
         current = filter_by_is_good(current, filter_caps)
         steps.append(FilterStepCount("genotype_qc", count_variant_keys(current)))
@@ -416,8 +476,8 @@ def apply_filters(
     return FilterPipelineResult(dvars=current, steps=steps)
 
 
-def split_keys_by_chromosome(dvars: VarsMap) -> Dict[str, List[str]]:
-    dchr: Dict[str, List[str]] = {chrom: [] for chrom in STAGE3_CHROMOSOMES}
+def split_keys_by_chromosome(dvars: VarsMap, chromosomes: List[str]) -> Dict[str, List[str]]:
+    dchr: Dict[str, List[str]] = {chrom: [] for chrom in chromosomes}
 
     for key in sorted(dvars.keys()):
         row = key.split("_")
@@ -470,11 +530,15 @@ def is_transition(ref: str, alt: str) -> bool:
     return (ref.upper(), alt.upper()) in TRANSITION_PAIRS
 
 
-def titv_counts_for_chromosome(keys: Iterable[str]) -> Dict[str, int | float | None]:
+def titv_counts_for_chromosome(
+    keys: Iterable[str],
+    *,
+    allowed_chromosomes: Collection[str],
+) -> Dict[str, int | float | None]:
     transitions = 0
     transversions = 0
     for key in keys:
-        parsed = parse_snv_key(key)
+        parsed = parse_snv_key(key, allowed_chromosomes=allowed_chromosomes)
         if parsed is None:
             continue
         _, ref, alt = parsed
@@ -494,13 +558,20 @@ def titv_counts_for_chromosome(keys: Iterable[str]) -> Dict[str, int | float | N
     }
 
 
-def compute_titv_summary(dchr_sorted: Dict[str, List[str]]) -> Dict[str, object]:
+def compute_titv_summary(
+    dchr_sorted: Dict[str, List[str]],
+    chromosomes: List[str],
+) -> Dict[str, object]:
     by_chromosome: Dict[str, Dict[str, int | float | None]] = {}
     total_transitions = 0
     total_transversions = 0
+    allowed = set(chromosomes)
 
-    for chrom in STAGE3_CHROMOSOMES:
-        counts = titv_counts_for_chromosome(dchr_sorted.get(chrom, []))
+    for chrom in chromosomes:
+        counts = titv_counts_for_chromosome(
+            dchr_sorted.get(chrom, []),
+            allowed_chromosomes=allowed,
+        )
         by_chromosome[chrom] = counts
         total_transitions += int(counts["transitions"])
         total_transversions += int(counts["transversions"])
@@ -560,11 +631,13 @@ def build_stage3_parameters_payload(
     *,
     stage2_dir: Path,
     output_dir: Path,
-    task: str,
+    collect: str,
     default_cap: int | None,
     class_to_cap: Dict[str, int],
     cap_per_class: Dict[str, int],
     snv_only: bool,
+    autosomal: bool,
+    chromosomes: List[str],
     filter_caps: FilterCaps | None,
     class_names: List[str],
     classes_processed: int,
@@ -575,11 +648,13 @@ def build_stage3_parameters_payload(
         "stage2_dir": str(stage2_dir.resolve()),
         "output_dir": output_dir.name,
         "output_path": str(output_dir.resolve()),
-        "task": task,
+        "collect": collect,
         "default_cap": default_cap,
         "class_cap_overrides": dict(sorted(class_to_cap.items())),
         "cap_per_class": cap_per_class,
         "snv_only": snv_only,
+        "autosomal": autosomal,
+        "chromosomes": chromosomes,
         "filter_enabled": filter_caps is not None,
         "class_names": class_names,
         "classes_processed": classes_processed,
@@ -596,8 +671,8 @@ def build_stage3_parameters_payload(
     return payload
 
 
-def print_stage3_summary(result: Stage3Result, *, task: str) -> None:
-    print(f"[stage3 summary] task={task} output={result.output_dir}")
+def print_stage3_summary(result: Stage3Result, *, collect: str) -> None:
+    print(f"[stage3 summary] collect={collect} output={result.output_dir}")
     for row in result.class_summaries:
         titv_display = "n/a" if row.titv_ratio is None else f"{row.titv_ratio:.6f}"
         print(
@@ -623,27 +698,29 @@ def _filter_steps_to_json(steps: List[FilterStepCount]) -> List[Dict[str, object
 def _write_class_stage3_outputs(
     class_dir: Path,
     class_name: str,
-    task: str,
+    collect: str,
     dvars_filtered: VarsMap,
     dchr_sorted: Dict[str, List[str]],
     *,
     run_dir_name: str,
     patient_variant_cap: int,
     snv_only: bool,
+    autosomal: bool,
+    chromosomes: List[str],
     filter_caps: FilterCaps | None,
     filter_steps: List[FilterStepCount],
 ) -> None:
     class_dir.mkdir(parents=True, exist_ok=True)
     write_vcf(dvars_filtered, class_dir, dchr_sorted)
 
-    titv_summary = compute_titv_summary(dchr_sorted)
+    titv_summary = compute_titv_summary(dchr_sorted, chromosomes)
     (class_dir / "stage3_titv.json").write_text(
         json.dumps(titv_summary, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
     summary: Dict[str, object] = {
-        "task": task,
+        "collect": collect,
         "class": class_name,
         "output_dir": class_dir.name,
         "run_dir": run_dir_name,
@@ -651,6 +728,8 @@ def _write_class_stage3_outputs(
         "chromosome_counts": {chrom: len(keys) for chrom, keys in dchr_sorted.items()},
         "patient_variant_cap": patient_variant_cap,
         "snv_only": snv_only,
+        "autosomal": autosomal,
+        "chromosomes": chromosomes,
         "filter_enabled": filter_caps is not None,
         "filter_pipeline": _filter_steps_to_json(filter_steps),
     }
@@ -677,15 +756,17 @@ def run_stage3(
     class_to_cap: Dict[str, int],
     filter_caps: FilterCaps | None = None,
     snv_only: bool = True,
+    autosomal: bool = True,
     extra_filters: Iterable[ExtraFilter] | None = None,
-    task: str = "denovo",
+    collect: str = "denovo",
 ) -> Stage3Result:
-    if task not in ("denovo", "inherited"):
-        raise ValueError("task must be 'denovo' or 'inherited'")
+    if collect not in ("denovo", "inherited"):
+        raise ValueError("collect must be 'denovo' or 'inherited'")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    chromosomes = resolve_stage3_chromosomes(autosomal=autosomal)
 
-    load_combo = load_combined_dvars_for_class if task == "denovo" else load_combined_dvars_inh_for_class
+    load_combo = load_combined_dvars_for_class if collect == "denovo" else load_combined_dvars_inh_for_class
 
     classes_processed = 0
     class_summaries: List[Stage3ClassSummary] = []
@@ -700,13 +781,14 @@ def run_stage3(
         filter_result = apply_filters(
             dvars_combo,
             cap,
+            chromosomes=chromosomes,
             snv_only=snv_only,
             filter_caps=filter_caps,
             extra_filters=extra_filters,
         )
         dvars_filtered = filter_result.dvars
-        dchr_class_sorted = sort_chromosome_keys(split_keys_by_chromosome(dvars_filtered))
-        titv_class = compute_titv_summary(dchr_class_sorted)
+        dchr_class_sorted = sort_chromosome_keys(split_keys_by_chromosome(dvars_filtered, chromosomes))
+        titv_class = compute_titv_summary(dchr_class_sorted, chromosomes)
         overall = titv_class["overall"]
         variants_left = len(dvars_filtered)
 
@@ -714,12 +796,14 @@ def run_stage3(
         _write_class_stage3_outputs(
             class_dir,
             class_name,
-            task,
+            collect,
             dvars_filtered,
             dchr_class_sorted,
             run_dir_name=output_dir.name,
             patient_variant_cap=cap,
             snv_only=snv_only,
+            autosomal=autosomal,
+            chromosomes=chromosomes,
             filter_caps=filter_caps,
             filter_steps=filter_result.steps,
         )
@@ -745,11 +829,13 @@ def run_stage3(
             build_stage3_parameters_payload(
                 stage2_dir=stage2_dir,
                 output_dir=output_dir,
-                task=task,
+                collect=collect,
                 default_cap=default_cap,
                 class_to_cap=class_to_cap,
                 cap_per_class=cap_per_class,
                 snv_only=snv_only,
+                autosomal=autosomal,
+                chromosomes=chromosomes,
                 filter_caps=filter_caps,
                 class_names=sorted(class_map.keys()),
                 classes_processed=classes_processed,

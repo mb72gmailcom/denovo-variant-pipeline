@@ -37,8 +37,9 @@ from make_vcf_pipeline.stage3 import (
     DEFAULT_FILTER_QT,
     filter_caps_from_args,
     parse_class_cap_pairs,
-    parse_classes_to_process,
+    parse_stage3_classes,
     print_stage3_summary,
+    resolve_stage3_collect,
     resolve_stage3_classes,
     resolve_stage3_output,
     run_stage3,
@@ -112,21 +113,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--batch-size", type=int, default=1000, help="Stage2: patient batch size")
     parser.add_argument(
-        "--task",
+        "--collect",
         choices=("denovo", "inherited"),
-        default="denovo",
-        help="Stage2 sidecar lists + stage3 source (dVars vs dVars_inh) and output dir (stage3 vs stage3_inherited).",
+        default=None,
+        help="Primary bucket for stage2 (default denovo when running stage2) and optional override for stage3. "
+        "Stage3 alone: default from stage2/stage2_parameters.json.",
     )
     parser.add_argument(
-        "--save-inh",
+        "--save-all",
         action="store_true",
-        help="Stage2: with --task denovo, also collect/save dVars_inh.",
-    )
-    parser.add_argument(
-        "--save-denovo",
-        "--save_denovo",
-        action="store_true",
-        help="Stage2: with --task inherited, also collect/save dVars.",
+        default=False,
+        help="Stage2: also collect/save the other bucket "
+        "(dVars_inh when collect=denovo, dVars when collect=inherited).",
     )
     parser.add_argument(
         "--use-ext-denovo",
@@ -134,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
     )
     parser.add_argument(
-        "--stage2-nohist",
+        "--stage2-nostats",
         action="store_true",
         help="Stage2: skip qt/dp/ab histogram JSON files (computed by default per class).",
     )
@@ -153,16 +151,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage3: per-class denovo cap override, repeat as class=cap.",
     )
     parser.add_argument(
-        "--classes-to-process",
-        action="append",
-        default=[],
-        help="Stage3: only these classes (comma-separated or repeat). Omit to process all classes.",
+        "--stage3-classes",
+        type=str,
+        default="",
+        help="Stage3: optional subset of classes (comma-separated). "
+        "Default: classes from stage2/stage2_parameters.json.",
     )
     parser.add_argument(
         "--snv",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Stage3: drop non-SNV variant keys (default: enabled). Use --no-snv to disable.",
+    )
+    parser.add_argument(
+        "--autosomal",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stage3: restrict to autosomal chromosomes (chr1–chr22 only; default: enabled). "
+        "Use --no-autosomal to include chrX, chrY, and chrM.",
     )
     parser.add_argument(
         "--filter",
@@ -195,6 +201,7 @@ def main() -> None:
     class_map = None
     stage1_result = None
     stage2_classes: List[str] | None = None
+    stage2_collect_used: str | None = None
 
     if args.run_stage1:
         classes = _split_csv(args.classes)
@@ -238,6 +245,7 @@ def main() -> None:
             stage1_params=stage1_params,
         )
         stage2_classes = stage2_config.classes
+        stage2_collect_used = args.collect or "denovo"
         stage2_result = run_stage2(
             input_dir=args.input_dir,
             output_dir=stage2_out_dir,
@@ -245,31 +253,36 @@ def main() -> None:
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
             batch_size=args.batch_size,
-            task=args.task,
-            save_inh=args.save_inh,
-            save_denovo=args.save_denovo,
+            collect=stage2_collect_used,
+            save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
-            write_hist=not args.stage2_nohist,
+            write_hist=not args.stage2_nostats,
             stage1_parameters_path=(
                 stage1_result.parameters_json if stage1_result is not None else stage1_parameters_path(args.output_dir)
             ),
         )
         print(f"[stage2] done -> {len(stage2_result.outputs)} batch outputs in {stage2_out_dir}")
         print(f"[stage2] parameters -> {stage2_result.parameters_json}")
-        print_stage2_summary(stage2_result, task=args.task)
+        print_stage2_summary(stage2_result, collect=stage2_collect_used)
 
     if args.run_stage3:
         if class_map is None:
             class_map = load_class_map(pipeline_root=args.output_dir, cap_min=args.cap_min, cap_max=args.cap_max)
 
+        stage3_classes = parse_stage3_classes(args.stage3_classes)
         class_names = resolve_stage3_classes(
             class_map,
-            classes_override=parse_classes_to_process(args.classes_to_process) or None,
+            classes_override=stage3_classes if stage3_classes else None,
             stage2_classes=stage2_classes,
             pipeline_root=args.output_dir,
         )
+        collect = resolve_stage3_collect(
+            collect_override=args.collect,
+            stage2_collect=stage2_collect_used,
+            pipeline_root=args.output_dir,
+        )
         class_map_run, stage3_out_dir = resolve_stage3_output(
-            args.output_dir, class_map, class_names, task=args.task
+            args.output_dir, class_map, class_names, collect=collect
         )
         stage3_result = run_stage3(
             stage2_dir=resolve_stage2_input_dir(None, args.output_dir),
@@ -286,11 +299,12 @@ def main() -> None:
                 filter_ab_het=args.filter_ab_het,
             ),
             snv_only=args.snv,
-            task=args.task,
+            autosomal=args.autosomal,
+            collect=collect,
         )
         print(f"[stage3] done -> {stage3_result.output_dir}")
         print(f"[stage3] parameters -> {stage3_result.parameters_json}")
-        print_stage3_summary(stage3_result, task=args.task)
+        print_stage3_summary(stage3_result, collect=collect)
 
 
 if __name__ == "__main__":

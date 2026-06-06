@@ -18,7 +18,7 @@ Each stage writes a parameters JSON in its output directory:
 | Stage | Path | Used by later stages for |
 |-------|------|--------------------------|
 | 1 | `<output-dir>/stage1/stage1_parameters.json` | Class map caps, suffixes per class |
-| 2 | `<output-dir>/stage2/stage2_parameters.json` | Task, suffixes, batch settings |
+| 2 | `<output-dir>/stage2/stage2_parameters.json` | Collect bucket, classes, suffixes, batch settings |
 | 3 | `<output-dir>/stage3_vN/stage3_parameters.json` | Caps, SNV/filter settings for the run |
 
 ## Stage 1
@@ -142,27 +142,27 @@ make-vcf stage2 \
 Expected file pattern (suffix per class comes from stage 1 parameters):
 - `input_dir/patient_id/patient_id.<suffix>`
 
-Batch outputs (depends on `--task` and save flags):
-- `stage2_parameters.json` (run parameters: task, suffixes per class, batch size, etc.)
+Batch outputs (depends on `--collect` and `--save-all`):
+- `stage2_parameters.json` (run parameters: collect, save_all, suffixes per class, batch size, etc.)
 - `class_<name>/batch_00001_dVars.pkl`
 - `class_<name>/batch_00001_dVars_inh.pkl`
 - `class_<name>/patient_dVars_counts.json` (variant records per patient for the class, written once after all batches)
 - `class_<name>/patient_dVars_inh_counts.json` (when inherited variants are collected)
 
-Histograms (default on; use `--stage2-nohist` to skip; active `--task` bucket only; AB files omitted if all bins are zero):
+Histograms (default on; use `--stage2-nostats` to skip; primary `--collect` bucket only; AB files omitted if all bins are zero):
 
 - `children_qt_hist.json`, `parents_qt_hist.json`, `children_dp_hist.json`, `parents_dp_hist.json` (all genotypes pooled)
 - `children_00_ab_hist.json`, `parents_00_ab_hist.json`, `children_01_ab_hist.json`, `parents_01_ab_hist.json`, `children_11_ab_hist.json`, `parents_11_ab_hist.json` (AB = `ada/(adr+ada)`)
 
 Optional patient-ID sidecar lists (only written when that batch or class has at least one ID):
 
-- `--task denovo` (default): `batch_*_patients_nonempty_dvars_inh.txt` per batch (if non-empty), and `patients_nonempty_dvars_inh.txt` for the class (if non-empty).
-- `--task inherited`: `batch_*_patients_nonempty_dvars.txt` per batch (if non-empty), and `patients_nonempty_dvars.txt` for the class (if non-empty).
+- `--collect denovo` (default): `batch_*_patients_nonempty_dvars_inh.txt` per batch (if non-empty), and `patients_nonempty_dvars_inh.txt` for the class (if non-empty).
+- `--collect inherited`: `batch_*_patients_nonempty_dvars.txt` per batch (if non-empty), and `patients_nonempty_dvars.txt` for the class (if non-empty).
 
 Collection/saving defaults in stage 2:
 
-- `--task denovo`: collect/save `dVars` only. Use `--save-inh` to also collect/save `dVars_inh`.
-- `--task inherited`: collect/save `dVars_inh` only. Use `--save-denovo` (or `--save_denovo`) to also collect/save `dVars`.
+- `--collect denovo` (default): collect/save `dVars` only. Use `--save-all` to also collect/save `dVars_inh`.
+- `--collect inherited`: collect/save `dVars_inh` only. Use `--save-all` to also collect/save `dVars`.
 
 Denovo classification (stage 2):
 
@@ -172,10 +172,12 @@ Denovo classification (stage 2):
 ## Stage 3
 
 Use class map from stage 1 and stage 2 batch outputs.  
-`--output-dir` is the **pipeline root**; results go under a stage3 directory chosen by `--task` and optional `--classes-to-process`:
+`--output-dir` is the **pipeline root**; results go under a stage3 directory chosen by **`--collect`** (default: value from `stage2_parameters.json`) and optional **`--stage3-classes`**:
 
-- **`--task denovo` (default):** read `batch_*_dVars.pkl` per class → `<output-dir>/stage3_vN/` or `<output-dir>/stage3_<classes>_vN/`
-- **`--task inherited`:** read `batch_*_dVars_inh.pkl` per class → `<output-dir>/stage3_inherited_vN/` or `<output-dir>/stage3_inherited_<classes>_vN/`
+- **`collect=denovo`:** read `batch_*_dVars.pkl` per class → `<output-dir>/stage3_vN/` or `<output-dir>/stage3_<classes>_vN/`
+- **`collect=inherited`:** read `batch_*_dVars_inh.pkl` per class → `<output-dir>/stage3_inherited_vN/` or `<output-dir>/stage3_inherited_<classes>_vN/`
+
+Standalone `make-vcf stage3` reads **`collect`** and **classes** from `stage2/stage2_parameters.json` when those flags are omitted. Pass **`--collect`** or **`--stage3-classes`** to override.
 
 Each stage3 run uses the next monotonic version `N` for that stem (e.g. `stage3_v0`, then `stage3_v1`; deleted intermediate versions are not reused). Variants are **not** merged across classes; each class is written to its own subdirectory with separate summary files.
 
@@ -183,7 +185,7 @@ Each stage3 run uses the next monotonic version `N` for that stem (e.g. `stage3_
 `--stage2-dir` defaults to `<output-dir>/stage2`.  
 Use the same `--cap-min` / `--cap-max` as stage 1 (defaults 22000 / 75000).
 
-Within each `class_<name>/` directory, per-chromosome `variants.vcf` files are written (headerless; variant set depends on `--snv` and other stage3 filters).
+Within each `class_<name>/` directory, per-chromosome `variants.vcf` files are written (headerless; variant set depends on `--snv`, `--autosomal`, and other stage3 filters). By default, only autosomal chromosomes (chr1–chr22) are included; use `--no-autosomal` to also include chrX, chrY, and chrM.
 
 ```bash
 make-vcf stage3 \
@@ -191,7 +193,7 @@ make-vcf stage3 \
   --denovo-cap 100 \
   --class-cap SSC=80 \
   --class-cap ABC=120 \
-  --task denovo
+  --collect denovo
 ```
 
 Inherited variants from stage 2 `dVars_inh` batches (example):
@@ -200,16 +202,16 @@ Inherited variants from stage 2 `dVars_inh` batches (example):
 make-vcf stage3 \
   --output-dir /data/out \
   --denovo-cap 100 \
-  --task inherited
+  --collect inherited
 ```
 
-Process only some classes (e.g. `/data/out/stage3_SSC_ABC_v0/` with `--task denovo`, or `/data/out/stage3_inherited_SSC_ABC_v0/` with `--task inherited`):
+Process only some classes (e.g. `/data/out/stage3_SSC_ABC_v0/` with `--collect denovo`, or `/data/out/stage3_inherited_SSC_ABC_v0/` with `--collect inherited`):
 
 ```bash
 make-vcf stage3 \
   --output-dir /data/out \
   --denovo-cap 100 \
-  --classes-to-process SSC,ABC
+  --stage3-classes SSC,ABC
 ```
 
 You can also provide caps as one comma-separated list:
@@ -221,8 +223,9 @@ You can also provide caps as one comma-separated list:
 Stage3 filter order (recorded in each class `stage3_summary.json`):
 
 1. **Per-patient variant cap** — `--denovo-cap` / `--class-cap` (excludes patients with too many variants)
-2. **SNV-only** — `--snv` (default on; use `--no-snv` to keep indels/multi-base alleles)
-3. **Genotype QC** — `--filter` (optional; `is_good` on mother, father, and child)
+2. **Chromosome allowlist** — chr1–chr22 by default (`--autosomal`); chr1–chr22 + chrX/chrY/chrM with `--no-autosomal`
+3. **SNV-only** — `--snv` (default on; use `--no-snv` to keep indels/multi-base alleles)
+4. **Genotype QC** — `--filter` (optional; `is_good` on mother, father, and child)
 
 Defaults when `--filter` is set: `--filter-dp 20`, `--filter-qt 90`, `--filter-abHom0 0.05`, `--filter-abHom1 0.05`, `--filter-abHet 0.30`. Depth and quality pass when `dp >= dp_cap` and `qt >= qt_cap`.
 
@@ -241,7 +244,7 @@ Outputs (under the chosen stage3 run directory, one set per class):
 
 ```
 stage3_vN/
-  stage3_parameters.json  # run parameters: task, caps per class, snv/filter settings
+  stage3_parameters.json  # run parameters: collect, autosomal, chromosomes, caps, snv/filter settings
   class_SSC/
     chr1/variants.vcf
     chr2/variants.vcf
@@ -259,9 +262,9 @@ Each `stage3_summary.json` includes `patient_variant_cap` (the cap applied to th
 Combined commands (`run12`, `run123`, `run.py`) pass stage 1 settings to later stages automatically:
 
 - **Stage 2** uses suffixes and the default class list from stage 1 (in memory when stage 1 ran in the same command, otherwise from `stage1_parameters.json`).
-- **Stage 3** uses the same class list as stage 2 (in memory when stage 2 ran in the same command, otherwise from `stage2_parameters.json`), unless `--classes-to-process` overrides.
+- **Stage 3** uses **`collect`** and the class list from stage 2 (in memory when stage 2 ran in the same command, otherwise from `stage2_parameters.json`), unless `--collect` or `--stage3-classes` overrides.
 
-Optional: restrict stage 2 with `--stage2-classes`; stage 3 will match unless `--classes-to-process` is set.
+Optional: restrict stage 2 with `--stage2-classes`; stage 3 will match unless `--stage3-classes` is set.
 
 ```bash
 make-vcf run123 \
@@ -275,12 +278,12 @@ make-vcf run123 \
   --class-cap SSC=80
 ```
 
-(`--classes` applies to stage 1; `--suffix` / `--class-suffix` apply to stage 1 only. Stage 2 and stage 3 pick up classes and suffixes from the stage 1 parameters file automatically in the same command. Use `--stage2-classes` in `run12`/`run123`/`run.py` to limit stage 2 to a subset; stage 3 then follows stage 2's classes unless `--classes-to-process` overrides.)
+(`--classes` applies to stage 1; `--suffix` / `--class-suffix` apply to stage 1 only. Stage 2 and stage 3 pick up classes and suffixes from the stage 1 parameters file automatically in the same command. Use `--stage2-classes` in `run12`/`run123`/`run.py` to limit stage 2 to a subset; stage 3 then follows stage 2's classes unless `--stage3-classes` overrides.)
 
 Optional: restrict stage 3 to a subset of classes (writes `/data/out/stage3_SSC_ABC_v0/`, etc.). Add to the `run123` command:
 
 ```bash
---classes-to-process SSC,ABC
+--stage3-classes SSC,ABC
 ```
 
 ## `run.py` helper
@@ -300,7 +303,7 @@ python run.py \
   --batch-size 1000 \
   --denovo-cap 100 \
   --class-cap SSC=80 \
-  --classes-to-process SSC,ABC
+  --stage3-classes SSC,ABC
 ```
 
 Run only selected stages by providing only the needed flags:
