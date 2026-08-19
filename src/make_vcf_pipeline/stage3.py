@@ -514,31 +514,22 @@ def sort_chromosome_keys(dchr: Dict[str, List[str]]) -> Dict[str, List[str]]:
 
 
 def write_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str, List[str]]) -> None:
-    """Write headerless per-chromosome VCF from filtered variant keys (no #CHROM line)."""
+    """Write headerless per-chromosome VCF from filtered variant keys (no #CHROM line).
+
+    Each variant key is one row. Keys that share a position are not merged.
+    """
     for chrom, keys in dchr_sorted.items():
         chrom_dir = output_dir / chrom
         chrom_dir.mkdir(parents=True, exist_ok=True)
         out_file = chrom_dir / "variants.vcf"
 
-        prev_pos = None
-        prev_row = None
         with out_file.open("w", encoding="utf-8") as f:
             for key in keys:
                 parts = key.split("_", 3)
                 if len(parts) < 4:
                     continue
                 row_chrom, pos, ref, alt = parts
-
-                if pos != prev_pos:
-                    if prev_row is not None:
-                        f.write("\t".join(prev_row) + "\n")
-                    prev_row = [row_chrom, pos, "rsXXX", ref, alt]
-                    prev_pos = pos
-                else:
-                    prev_row[4] += "," + alt
-
-            if prev_row is not None:
-                f.write("\t".join(prev_row) + "\n")
+                f.write("\t".join([row_chrom, pos, "rsXXX", ref, alt]) + "\n")
 
         variant_patients = patients_per_variant_for_keys(dvars, keys)
         (chrom_dir / "variant_patients.json").write_text(
