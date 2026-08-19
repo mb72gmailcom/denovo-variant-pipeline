@@ -425,6 +425,33 @@ def filter_snv_variants(dvars: VarsMap, *, allowed_chromosomes: Collection[str])
     }
 
 
+def _extend_unique(target: List[str], values: Iterable[str]) -> None:
+    seen = set(target)
+    for value in values:
+        if value not in seen:
+            target.append(value)
+            seen.add(value)
+
+
+def expand_comma_joined_alts(dvars: VarsMap) -> VarsMap:
+    """Turn a key like chr21_7975055_A_C,G into chr21_7975055_A_C and chr21_7975055_A_G."""
+    expanded: VarsMap = {}
+    for key, values in dvars.items():
+        parts = key.split("_", 3)
+        if len(parts) < 4:
+            _extend_unique(expanded.setdefault(key, []), values)
+            continue
+        chrom, pos, ref, alt_field = parts
+        alleles = [allele.strip() for allele in alt_field.split(",") if allele.strip()]
+        if not alleles:
+            _extend_unique(expanded.setdefault(key, []), values)
+            continue
+        for allele in alleles:
+            new_key = f"{chrom}_{pos}_{ref}_{allele}"
+            _extend_unique(expanded.setdefault(new_key, []), values)
+    return expanded
+
+
 @dataclass(frozen=True)
 class FilterStepCount:
     step: str
@@ -472,6 +499,9 @@ def apply_filters(
     current = filter_by_chromosome(current, chromosomes)
     steps.append(FilterStepCount("chromosome", count_variant_keys(current)))
 
+    # Split comma-joined ALTs into one key per allele before SNV (else C,G is dropped)
+    current = expand_comma_joined_alts(current)
+
     # 3) SNV-only variant keys
     if snv_only:
         current = filter_snv_variants(current, allowed_chromosomes=chromosomes)
@@ -516,7 +546,8 @@ def sort_chromosome_keys(dchr: Dict[str, List[str]]) -> Dict[str, List[str]]:
 def write_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str, List[str]]) -> None:
     """Write headerless per-chromosome VCF from filtered variant keys (no #CHROM line).
 
-    Each variant key is one row. Keys that share a position are not merged.
+    Each allele is one row. Comma-joined ALTs (C,G) are written as separate lines;
+    keys that share a position are not merged.
     """
     for chrom, keys in dchr_sorted.items():
         chrom_dir = output_dir / chrom
@@ -528,8 +559,9 @@ def write_vcf(dvars: VarsMap, output_dir: Path, dchr_sorted: Dict[str, List[str]
                 parts = key.split("_", 3)
                 if len(parts) < 4:
                     continue
-                row_chrom, pos, ref, alt = parts
-                f.write("\t".join([row_chrom, pos, "rsXXX", ref, alt]) + "\n")
+                row_chrom, pos, ref, alt_field = parts
+                for alt in [a.strip() for a in alt_field.split(",") if a.strip()]:
+                    f.write("\t".join([row_chrom, pos, "rsXXX", ref, alt]) + "\n")
 
         variant_patients = patients_per_variant_for_keys(dvars, keys)
         (chrom_dir / "variant_patients.json").write_text(
