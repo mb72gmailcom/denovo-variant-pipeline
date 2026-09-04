@@ -59,7 +59,7 @@ Optional file statistics (when `--suffix` or `--class-suffix` is provided):
 - `--stats size` (default): byte size of each file
 - `--stats counts`: line count (supports `.gz`)
 
-Paths checked: `input_dir/<patient_id>/<patient_id>.<suffix>` using the class default (`--suffix`) or per-class override (`--class-suffix`).
+Paths checked: `input_dir/<patient_id>/<patient_id>.<suffix>` using the class default (`--suffix`) or per-class override (`--class-suffix`). If the suffix starts with `.` or `_`, it is appended as-is (`SP0002678` + `_snow.vcf.gz` → `SP0002678_snow.vcf.gz`).
 
 Only patients with existing files are included in the stats JSON files.
 
@@ -175,7 +175,7 @@ make-vcf stage2 \
 ```
 
 Expected file pattern (paths from stage 1 parameters: `input_dir` and suffix per class):
-- `input_dir/patient_id/patient_id.<suffix>`
+- `input_dir/patient_id/patient_id.<suffix>` (or `patient_id` + suffix when the suffix starts with `.` or `_`)
 
 Batch outputs (depends on `--collect` and `--save-all`):
 - `stage2_parameters.json` (run parameters: collect, save_all, suffixes per class, batch size, etc.)

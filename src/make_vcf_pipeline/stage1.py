@@ -414,8 +414,18 @@ def resolve_stage2_input_dir(explicit: Path | None, pipeline_root: Path) -> Path
     return pipeline_root / STAGE2_SUBDIR
 
 
+def patient_filename(patient_id: str, suffix: str) -> str:
+    """Build <patient_id>.<suffix>, or append suffix as-is when it starts with '.' or '_'."""
+    suffix = suffix.strip()
+    if not suffix:
+        raise ValueError("suffix must be non-empty")
+    if suffix[0] in "._":
+        return f"{patient_id}{suffix}"
+    return f"{patient_id}.{suffix}"
+
+
 def build_patient_file_path(input_dir: Path, patient_id: str, suffix: str) -> Path:
-    return input_dir / patient_id / f"{patient_id}.{suffix.lstrip('.')}"
+    return input_dir / patient_id / patient_filename(patient_id, suffix)
 
 
 def file_stat_value(file_path: Path, stats: str) -> int:

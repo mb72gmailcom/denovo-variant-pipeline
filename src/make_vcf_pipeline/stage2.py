@@ -10,7 +10,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Tuple
 
-from .stage1 import load_class_map
+from .stage1 import build_patient_file_path, load_class_map
 
 HIST_BIN_COUNT = 100
 AB_GT_KEYS = ("00", "01", "11")
@@ -625,7 +625,7 @@ def _variants_per_patient_stats(counts: List[int]) -> tuple[float, float]:
 
 
 def build_file_path(input_dir: Path, patient_id: str, suffix: str) -> Path:
-    return input_dir / patient_id / f"{patient_id}.{suffix.lstrip('.')}"
+    return build_patient_file_path(input_dir, patient_id, suffix)
 
 
 def run_stage2(
