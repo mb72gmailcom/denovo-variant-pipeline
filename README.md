@@ -183,6 +183,7 @@ Batch outputs (depends on `--collect` and `--save-all`):
 - `class_<name>/batch_00001_dVars_inh.pkl`
 - `class_<name>/patient_dVars_counts.json` (variant records per patient for the class, written once after all batches)
 - `class_<name>/patient_dVars_inh_counts.json` (when inherited variants are collected)
+- `class_<name>/site_parse_stats.json` (total VCF sites, kept sites, and skips: missing GT, AD not `ref,alt`, other genotype-field failures). AD of `.` is a normal missing-value skip, not `skipped_bad_ad`.
 
 Histograms (default on; use `--stage2-nostats` to skip; primary `--collect` bucket only; AB files omitted if all bins are zero):
 

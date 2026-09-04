@@ -18,16 +18,63 @@ GT_TO_AB_KEY = {"0/0": "00", "0/1": "01", "1/1": "11"}
 AB_KEY_TO_GT = {"00": "0/0", "01": "0/1", "11": "1/1"}
 
 
-def get_details(pp: str) -> Tuple[str, int, int, int, int]:
+_DETAILS_FAIL = ("x/x", -1, -1, -1, -1)
+
+
+def parse_details(pp: str) -> Tuple[Tuple[str, int, int, int, int], str | None]:
     dpp = pp.split(":")
-    if len(dpp) >= 5 and dpp[1] != "." and "." not in dpp[2] and dpp[4] != ".":
+    if len(dpp) < 5:
+        return _DETAILS_FAIL, "short_format"
+    if dpp[1] == "." or dpp[4] == "." or "." in dpp[2]:
+        return _DETAILS_FAIL, "missing_value"
+    ad_parts = dpp[2].split(",")
+    if len(ad_parts) < 2:
+        return _DETAILS_FAIL, "bad_ad"
+    try:
         gt = dpp[0]
         dp = int(dpp[1])
-        adr = int(dpp[2].split(",")[0])
-        ada = int(dpp[2].split(",")[1])
+        adr = int(ad_parts[0])
+        ada = int(ad_parts[1])
         gq = int(dpp[4])
-        return gt, gq, dp, adr, ada
-    return "x/x", -1, -1, -1, -1
+    except ValueError:
+        return _DETAILS_FAIL, "bad_int"
+    return (gt, gq, dp, adr, ada), None
+
+
+def get_details(pp: str) -> Tuple[str, int, int, int, int]:
+    details, _error = parse_details(pp)
+    return details
+
+
+@dataclass
+class SiteParseStats:
+    """Per-class VCF site counters from stage2 parsing."""
+
+    total_sites: int = 0
+    skipped_missing_gt: int = 0
+    skipped_bad_ad: int = 0
+    skipped_bad_details: int = 0
+    skipped_gt_parse: int = 0
+    kept_sites: int = 0
+
+    def merge(self, other: SiteParseStats) -> None:
+        self.total_sites += other.total_sites
+        self.skipped_missing_gt += other.skipped_missing_gt
+        self.skipped_bad_ad += other.skipped_bad_ad
+        self.skipped_bad_details += other.skipped_bad_details
+        self.skipped_gt_parse += other.skipped_gt_parse
+        self.kept_sites += other.kept_sites
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "schema": "stage2_site_parse_stats_v1",
+            "total_sites": self.total_sites,
+            "kept_sites": self.kept_sites,
+            "skipped_missing_gt": self.skipped_missing_gt,
+            "skipped_bad_ad": self.skipped_bad_ad,
+            "skipped_bad_details": self.skipped_bad_details,
+            "skipped_gt_parse": self.skipped_gt_parse,
+        }
 
 
 @dataclass(frozen=True)
@@ -377,9 +424,10 @@ def get_vars(
     hist: Stage2HistCollector | None = None,
     record_hist_denovo: bool = False,
     record_hist_inherited: bool = False,
-) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], bool]:
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], bool, SiteParseStats]:
     dvars_inh: Dict[str, List[str]] = {}
     dvars: Dict[str, List[str]] = {}
+    parse_stats = SiteParseStats()
     open_fn = gzip.open if file_path.suffix == ".gz" else open
 
     with open_fn(file_path, "rt", encoding="utf-8", errors="replace") as f:
@@ -397,14 +445,20 @@ def get_vars(
             if not header_ok:
                 continue
 
+            parse_stats.total_sites += 1
             mother, father, child, kk = get_triplet_at(line, mother_i, father_i, child_i)
             if mother == "." or father == "." or child == "." or ";" in kk:
+                parse_stats.skipped_missing_gt += 1
                 continue
 
-            ch, ch_gq, ch_dp, ch_adr, ch_ada = get_details(child)
-            mt, mt_gq, mt_dp, mt_adr, mt_ada = get_details(mother)
-            ft, ft_gq, ft_dp, ft_adr, ft_ada = get_details(father)
-            if ch_dp == -1 or mt_dp == -1 or ft_dp == -1:
+            (ch, ch_gq, ch_dp, ch_adr, ch_ada), err_ch = parse_details(child)
+            (mt, mt_gq, mt_dp, mt_adr, mt_ada), err_mt = parse_details(mother)
+            (ft, ft_gq, ft_dp, ft_adr, ft_ada), err_ft = parse_details(father)
+            if err_ch or err_mt or err_ft:
+                if "bad_ad" in {err_ch, err_mt, err_ft}:
+                    parse_stats.skipped_bad_ad += 1
+                else:
+                    parse_stats.skipped_bad_details += 1
                 continue
 
             gt = f"{mt}:{ft}:{ch}"
@@ -433,8 +487,10 @@ def get_vars(
                             hist.record_parent(ft, ft_gq, ft_dp, ft_adr, ft_ada)
                             hist.record_child(ch, ch_gq, ch_dp, ch_adr, ch_ada)
             except Exception:
+                parse_stats.skipped_gt_parse += 1
                 continue
-    return dvars, dvars_inh, header_ok
+            parse_stats.kept_sites += 1
+    return dvars, dvars_inh, header_ok, parse_stats
 
 
 def chunked(items: Iterable[str], size: int) -> Iterator[List[str]]:
@@ -502,6 +558,9 @@ class Stage2ClassSummary:
     stdev_variants_per_patient: float
     missing_trio: int
     missing_vcf_samples: int
+    total_sites: int
+    kept_sites: int
+    skipped_bad_ad: int
 
 
 @dataclass(frozen=True)
@@ -612,7 +671,9 @@ def print_stage2_summary(result: Stage2Result, *, collect: str) -> None:
         print(
             f"  {row.class_name}: mean_variants_per_patient={row.mean_variants_per_patient:.4f} "
             f"stdev={row.stdev_variants_per_patient:.4f} "
-            f"missing_trio={row.missing_trio} missing_vcf_samples={row.missing_vcf_samples}"
+            f"missing_trio={row.missing_trio} missing_vcf_samples={row.missing_vcf_samples} "
+            f"total_sites={row.total_sites} kept_sites={row.kept_sites} "
+            f"skipped_bad_ad={row.skipped_bad_ad}"
         )
 
 
@@ -676,6 +737,7 @@ def run_stage2(
         record_hist_inherited = write_hist and collect == "inherited"
         missing_trio: List[str] = []
         missing_vcf_samples: List[str] = []
+        class_parse_stats = SiteParseStats()
 
         for batch_index, batch_patient_ids in enumerate(chunked(patient_ids, batch_size), start=1):
             dVars: Dict[str, List[str]] = {}
@@ -691,7 +753,7 @@ def run_stage2(
                 file_path = build_file_path(input_dir, patient_id, suffix)
                 if not file_path.is_file():
                     continue
-                dvars, dvars_inh, header_ok = get_vars(
+                dvars, dvars_inh, header_ok, parse_stats = get_vars(
                     file_path,
                     patient_id,
                     trio,
@@ -705,6 +767,7 @@ def run_stage2(
                 if not header_ok:
                     missing_vcf_samples.append(patient_id)
                     continue
+                class_parse_stats.merge(parse_stats)
                 if collect_denovo:
                     merge(dVars, dvars)
                     class_dvars_counts[patient_id] = (
@@ -789,6 +852,11 @@ def run_stage2(
         if hist_collector is not None:
             hist_collector.write_json_files(class_dir, collect=collect)
 
+        (class_dir / "site_parse_stats.json").write_text(
+            json.dumps(class_parse_stats.as_dict(), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
         if missing_trio:
             (class_dir / "patients_missing_trio.txt").write_text(
                 "\n".join(sorted(missing_trio)) + "\n",
@@ -810,6 +878,9 @@ def run_stage2(
                 stdev_variants_per_patient=stdev_v,
                 missing_trio=len(missing_trio),
                 missing_vcf_samples=len(missing_vcf_samples),
+                total_sites=class_parse_stats.total_sites,
+                kept_sites=class_parse_stats.kept_sites,
+                skipped_bad_ad=class_parse_stats.skipped_bad_ad,
             )
         )
 
