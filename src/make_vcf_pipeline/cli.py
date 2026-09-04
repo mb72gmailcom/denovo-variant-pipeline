@@ -85,6 +85,29 @@ def _add_stage2_hist_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_stage2_family_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--family-file",
+        type=Path,
+        required=True,
+        help="Stage2: family metadata table (TSV or CSV) with child/mother/father columns.",
+    )
+    parser.add_argument(
+        "--family-columns",
+        type=str,
+        required=True,
+        help="Stage2: family-file column map as a JSON file path or an inline object, "
+        "e.g. {\"child\": \"spid\", \"mother\": \"mother_id\", \"father\": \"father_id\"}. "
+        "Include \"map\" when using --qmap.",
+    )
+    parser.add_argument(
+        "--qmap",
+        action="store_true",
+        help="Stage2: map person IDs to VCF sample names via the family-file column named in "
+        "family-columns JSON key 'map' (e.g. sample_id). Folder names stay spid.",
+    )
+
+
 def _add_stage3_snv_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--snv",
@@ -252,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
     )
+    _add_stage2_family_args(p2)
     _add_cap_args(p2)
     _add_stage2_hist_args(p2)
 
@@ -275,6 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run12 stage2: use extended denovo definition (if_denovo_ext).",
     )
+    _add_stage2_family_args(p12)
     _add_cap_args(p12)
     _add_stage2_hist_args(p12)
 
@@ -335,6 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run123 stage2: use extended denovo definition (if_denovo_ext).",
     )
+    _add_stage2_family_args(p123)
     _add_cap_args(p123)
     _add_stage2_hist_args(p123)
     _add_stage3_snv_args(p123)
@@ -482,11 +508,14 @@ def main() -> None:
             class_map=class_map,
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
+            family_file=args.family_file,
+            family_columns_spec=args.family_columns,
             batch_size=args.batch_size,
             collect=args.collect,
             save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
             write_hist=not args.stage2_nostats,
+            qmap=args.qmap,
             stage1_parameters_path=stage1_params_path,
         )
         print(json.dumps([o.__dict__ for o in stage2_result.outputs], indent=2, default=str))
@@ -523,11 +552,14 @@ def main() -> None:
             class_map=stage1_result.filtered_classes_to_patients,
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
+            family_file=args.family_file,
+            family_columns_spec=args.family_columns,
             batch_size=args.batch_size,
             collect=args.collect,
             save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
             write_hist=not args.stage2_nostats,
+            qmap=args.qmap,
             stage1_parameters_path=stage1_params_path,
         )
         print(f"Stage1 file: {stage1_result.filtered_output_json}")
@@ -582,11 +614,14 @@ def main() -> None:
             class_map=filtered_map,
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
+            family_file=args.family_file,
+            family_columns_spec=args.family_columns,
             batch_size=args.batch_size,
             collect=args.collect,
             save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
             write_hist=not args.stage2_nostats,
+            qmap=args.qmap,
             stage1_parameters_path=stage1_params_path,
         )
         stage3_result, stage3_collect = _run_stage3_from_context(

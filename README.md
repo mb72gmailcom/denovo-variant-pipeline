@@ -128,9 +128,19 @@ Stage 2 reads **`input_dir`**, **suffixes**, and the default **class list** from
 
 Use `--classes` to process only a subset (comma-separated class names, e.g. `SSC,ABC`). If omitted, all classes listed in the stage 1 parameters file (present in the filtered class map) are processed.
 
+`--family-file` and `--family-columns` are **required**. The family table has one row per person (extra people are ignored). `--family-columns` is a JSON file path **or** an inline object naming the child/mother/father headers, for example:
+
+```json
+{"child": "spid", "mother": "mother_id", "father": "father_id", "map": "sample_id"}
+```
+
+Patient folders stay `spid`. Trio membership is `child → (mother, father)`. VCF sample columns are looked up by those IDs, or by the `map` column when `--qmap` is set (person ID → sample ID, including parents via their own rows). Sequenced children with no complete trio are skipped (`patients_missing_trio.txt`); complete trios whose sample names are absent from the VCF header are skipped (`patients_missing_vcf_samples.txt`).
+
 ```bash
 make-vcf stage2 \
   --output-dir /data/out \
+  --family-file /data/families.tsv \
+  --family-columns /data/family_columns.json \
   --batch-size 1000
 ```
 
@@ -139,7 +149,29 @@ Process only selected classes:
 ```bash
 make-vcf stage2 \
   --output-dir /data/out \
+  --family-file /data/families.tsv \
+  --family-columns /data/family_columns.json \
   --classes SSC,ABC
+```
+
+Map person IDs to VCF sample names:
+
+```bash
+make-vcf stage2 \
+  --output-dir /data/out \
+  --family-file /data/families.tsv \
+  --family-columns /data/family_columns.json \
+  --qmap
+```
+
+Same map inline (quote the JSON for the shell):
+
+```bash
+make-vcf stage2 \
+  --output-dir /data/out \
+  --family-file /data/families.tsv \
+  --family-columns '{"child": "spid", "mother": "mother_id", "father": "father_id", "map": "sample_id"}' \
+  --qmap
 ```
 
 Expected file pattern (paths from stage 1 parameters: `input_dir` and suffix per class):
@@ -282,6 +314,8 @@ make-vcf run123 \
   --classes SSC,ABC \
   --suffix vcf.gz \
   --class-suffix ABC=vcf \
+  --family-file /data/families.tsv \
+  --family-columns /data/family_columns.json \
   --batch-size 1000 \
   --denovo-cap 100 \
   --class-cap SSC=80
@@ -309,6 +343,8 @@ python run.py \
   --classes SSC,ABC \
   --suffix vcf.gz \
   --class-suffix ABC=vcf \
+  --family-file /data/families.tsv \
+  --family-columns /data/family_columns.json \
   --batch-size 1000 \
   --denovo-cap 100 \
   --class-cap SSC=80 \
@@ -317,7 +353,8 @@ python run.py \
 
 Run only selected stages by providing only the needed flags:
 - `--run-stage1` requires `--input-dir`
-- `--run-stage2` and `--run-stage3` do not use `--input-dir` (read from `stage1_parameters.json` and stage2 outputs under `--output-dir`)
+- `--run-stage2` requires `--family-file` and `--family-columns`; it does not use `--input-dir` (read from `stage1_parameters.json`)
+- `--run-stage3` does not use `--input-dir` (reads stage2 outputs under `--output-dir`)
 
 Stage3-only example:
 

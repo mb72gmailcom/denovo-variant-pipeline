@@ -137,6 +137,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stage2: classify denovo with if_denovo_ext() instead of if_denovo().",
     )
     parser.add_argument(
+        "--family-file",
+        type=Path,
+        default=None,
+        help="Stage2: family metadata table (TSV or CSV). Required when --run-stage2.",
+    )
+    parser.add_argument(
+        "--family-columns",
+        type=str,
+        default=None,
+        help="Stage2: column map as a JSON file path or inline object. Required when --run-stage2.",
+    )
+    parser.add_argument(
+        "--qmap",
+        action="store_true",
+        help="Stage2: map person IDs to VCF sample names via the 'map' column in --family-columns.",
+    )
+    parser.add_argument(
         "--stage2-nostats",
         action="store_true",
         help="Stage2: skip qt/dp/ab histogram JSON files (computed by default per class).",
@@ -210,6 +227,12 @@ def main() -> None:
     if args.run_stage1 and args.input_dir is None:
         raise ValueError("--input-dir is required when running stage1")
 
+    if args.run_stage2:
+        if args.family_file is None:
+            raise ValueError("--family-file is required when running stage2")
+        if args.family_columns is None:
+            raise ValueError("--family-columns is required when running stage2")
+
     stage2_out_dir = resolve_stage2_output_dir(args.output_dir)
 
     class_map = None
@@ -266,11 +289,14 @@ def main() -> None:
             class_map=class_map,
             suffix_per_class=stage2_config.suffix_per_class,
             classes=stage2_config.classes,
+            family_file=args.family_file,
+            family_columns_spec=args.family_columns,
             batch_size=args.batch_size,
             collect=stage2_collect_used,
             save_all=args.save_all,
             use_ext_denovo=args.use_ext_denovo,
             write_hist=not args.stage2_nostats,
+            qmap=args.qmap,
             stage1_parameters_path=(
                 stage1_result.parameters_json if stage1_result is not None else stage1_parameters_path(args.output_dir)
             ),

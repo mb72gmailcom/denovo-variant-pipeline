@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import gzip
 import json
 import pickle
@@ -29,27 +30,175 @@ def get_details(pp: str) -> Tuple[str, int, int, int, int]:
     return "x/x", -1, -1, -1, -1
 
 
-def get_child_index(line: str, hid: str) -> int:
-    dd = line.split("\t")
-    if hid == dd[-1]:
-        return 1
-    if hid == dd[-2]:
-        return 2
-    if hid == dd[-3]:
-        return 3
-    return -1
+@dataclass(frozen=True)
+class FamilyColumns:
+    child: str
+    mother: str
+    father: str
+    map: str | None = None
 
 
-def get_triplet(line: str, ind: int) -> Tuple[str, str, str, str]:
+@dataclass(frozen=True)
+class Trio:
+    child: str
+    mother: str
+    father: str
+    child_sample: str
+    mother_sample: str
+    father_sample: str
+
+
+def _load_family_columns_data(spec: str | Path) -> tuple[Dict[str, object], Path | None]:
+    text = str(spec).strip()
+    if not text:
+        raise ValueError("Family column spec is empty")
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid inline family column JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("Family column JSON must be an object")
+        return data, None
+
+    path = Path(text)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Family column JSON not found at '{path}'. "
+            "Pass a JSON file path or an inline object such as "
+            '\'{"child": "spid", "mother": "mother_id", "father": "father_id"}\'.'
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid family column JSON in '{path}': {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Family column JSON must be an object")
+    return data, path
+
+
+def load_family_columns(spec: str | Path, *, qmap: bool) -> tuple[FamilyColumns, Path | None]:
+    data, source_path = _load_family_columns_data(spec)
+    missing = [key for key in ("child", "mother", "father") if not str(data.get(key, "")).strip()]
+    if missing:
+        raise ValueError(f"Family column JSON missing keys: {missing}")
+    map_col = str(data["map"]).strip() if data.get("map") is not None else ""
+    if qmap and not map_col:
+        raise ValueError("Family column JSON must include 'map' when --qmap is set")
+    return (
+        FamilyColumns(
+            child=str(data["child"]).strip(),
+            mother=str(data["mother"]).strip(),
+            father=str(data["father"]).strip(),
+            map=map_col if qmap else None,
+        ),
+        source_path,
+    )
+
+
+def _family_delimiter(header_line: str) -> str:
+    return "\t" if "\t" in header_line else ","
+
+
+def _family_id(value: object) -> str:
+    text = str(value).strip() if value is not None else ""
+    if text in {"", ".", "NA", "na", "NaN", "nan", "None", "none"}:
+        return ""
+    return text
+
+
+def load_trios(family_file: Path, columns: FamilyColumns, *, qmap: bool) -> Dict[str, Trio]:
+    if not family_file.is_file():
+        raise FileNotFoundError(f"Family file not found at '{family_file}'")
+
+    with family_file.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        first = handle.readline()
+        if not first:
+            raise ValueError(f"Family file is empty: '{family_file}'")
+        handle.seek(0)
+        reader = csv.DictReader(handle, delimiter=_family_delimiter(first))
+        if reader.fieldnames is None:
+            raise ValueError(f"Family file has no header: '{family_file}'")
+        needed = [columns.child, columns.mother, columns.father]
+        if qmap and columns.map:
+            needed.append(columns.map)
+        missing_cols = [name for name in needed if name not in reader.fieldnames]
+        if missing_cols:
+            raise ValueError(
+                f"Family file missing column(s) {missing_cols}. Found: {list(reader.fieldnames)}"
+            )
+        rows = list(reader)
+
+    person_to_sample: Dict[str, str] = {}
+    if qmap and columns.map:
+        for row in rows:
+            person = _family_id(row.get(columns.child))
+            sample = _family_id(row.get(columns.map))
+            if not person or not sample:
+                continue
+            previous = person_to_sample.get(person)
+            if previous is not None and previous != sample:
+                raise ValueError(
+                    f"Conflicting sample IDs for '{person}': {previous!r} vs {sample!r}"
+                )
+            person_to_sample[person] = sample
+
+    trios: Dict[str, Trio] = {}
+    for row in rows:
+        child = _family_id(row.get(columns.child))
+        mother = _family_id(row.get(columns.mother))
+        father = _family_id(row.get(columns.father))
+        if not child or not mother or not father:
+            continue
+        if qmap:
+            child_sample = person_to_sample.get(child, "")
+            mother_sample = person_to_sample.get(mother, "")
+            father_sample = person_to_sample.get(father, "")
+            if not child_sample or not mother_sample or not father_sample:
+                continue
+        else:
+            child_sample, mother_sample, father_sample = child, mother, father
+
+        trio = Trio(
+            child=child,
+            mother=mother,
+            father=father,
+            child_sample=child_sample,
+            mother_sample=mother_sample,
+            father_sample=father_sample,
+        )
+        existing = trios.get(child)
+        if existing is not None and existing != trio:
+            raise ValueError(
+                f"Conflicting trio rows for child '{child}': "
+                f"({existing.mother}, {existing.father}) vs ({mother}, {father})"
+            )
+        trios[child] = trio
+    return trios
+
+
+def trio_column_indices(header_fields: List[str], trio: Trio) -> Tuple[int, int, int] | None:
+    try:
+        return (
+            header_fields.index(trio.mother_sample),
+            header_fields.index(trio.father_sample),
+            header_fields.index(trio.child_sample),
+        )
+    except ValueError:
+        return None
+
+
+def get_triplet_at(
+    line: str,
+    mother_i: int,
+    father_i: int,
+    child_i: int,
+) -> Tuple[str, str, str, str]:
     dd = line.strip().split("\t")
-    kk = dd[2]
-    if ind == 1:
-        return dd[-3], dd[-2], dd[-1], kk
-    if ind == 2:
-        return dd[-3], dd[-1], dd[-2], kk
-    if ind == 3:
-        return dd[-2], dd[-1], dd[-3], kk
-    return ".", ".", ".", ","
+    kk = dd[2] if len(dd) > 2 else ","
+    if max(mother_i, father_i, child_i) >= len(dd):
+        return ".", ".", ".", ","
+    return dd[mother_i], dd[father_i], dd[child_i], kk
 
 
 def update(dvars: Dict[str, List[str]], kk: str, gt: str) -> None:
@@ -221,29 +370,34 @@ def if_denovo_ext(child: int, mother: int, father: int) -> bool:
 def get_vars(
     file_path: Path,
     patient_id: str,
+    trio: Trio,
     collect_denovo: bool = True,
     collect_inherited: bool = True,
     use_ext_denovo: bool = False,
     hist: Stage2HistCollector | None = None,
     record_hist_denovo: bool = False,
     record_hist_inherited: bool = False,
-) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]], bool]:
     dvars_inh: Dict[str, List[str]] = {}
     dvars: Dict[str, List[str]] = {}
     open_fn = gzip.open if file_path.suffix == ".gz" else open
 
     with open_fn(file_path, "rt", encoding="utf-8", errors="replace") as f:
-        ind = -1
+        mother_i = father_i = child_i = -1
+        header_ok = False
         for line in f:
             if line.startswith("##"):
                 continue
             if line.startswith("#CHR"):
-                ind = get_child_index(line.strip(), patient_id)
+                indices = trio_column_indices(line.strip().split("\t"), trio)
+                if indices is not None:
+                    mother_i, father_i, child_i = indices
+                    header_ok = True
                 continue
-            if ind < 0:
+            if not header_ok:
                 continue
 
-            mother, father, child, kk = get_triplet(line, ind)
+            mother, father, child, kk = get_triplet_at(line, mother_i, father_i, child_i)
             if mother == "." or father == "." or child == "." or ";" in kk:
                 continue
 
@@ -280,7 +434,7 @@ def get_vars(
                             hist.record_child(ch, ch_gq, ch_dp, ch_adr, ch_ada)
             except Exception:
                 continue
-    return dvars, dvars_inh
+    return dvars, dvars_inh, header_ok
 
 
 def chunked(items: Iterable[str], size: int) -> Iterator[List[str]]:
@@ -346,6 +500,8 @@ class Stage2ClassSummary:
     class_name: str
     mean_variants_per_patient: float
     stdev_variants_per_patient: float
+    missing_trio: int
+    missing_vcf_samples: int
 
 
 @dataclass(frozen=True)
@@ -416,6 +572,11 @@ def build_stage2_parameters_payload(
     collect_denovo: bool,
     collect_inherited: bool,
     suffix_per_class: Dict[str, str],
+    family_file: Path,
+    family_columns_path: Path | None,
+    family_columns: FamilyColumns,
+    qmap: bool,
+    trio_count: int,
 ) -> Dict[str, object]:
     return {
         "version": STAGE2_PARAMETERS_VERSION,
@@ -432,6 +593,16 @@ def build_stage2_parameters_payload(
         "collect_denovo": collect_denovo,
         "collect_inherited": collect_inherited,
         "suffix_per_class": dict(sorted(suffix_per_class.items())),
+        "family_file": str(family_file.resolve()),
+        "family_columns_path": str(family_columns_path.resolve()) if family_columns_path else None,
+        "family_columns": {
+            "child": family_columns.child,
+            "mother": family_columns.mother,
+            "father": family_columns.father,
+            "map": family_columns.map,
+        },
+        "qmap": qmap,
+        "trio_count": trio_count,
     }
 
 
@@ -440,7 +611,8 @@ def print_stage2_summary(result: Stage2Result, *, collect: str) -> None:
     for row in result.class_summaries:
         print(
             f"  {row.class_name}: mean_variants_per_patient={row.mean_variants_per_patient:.4f} "
-            f"stdev={row.stdev_variants_per_patient:.4f}"
+            f"stdev={row.stdev_variants_per_patient:.4f} "
+            f"missing_trio={row.missing_trio} missing_vcf_samples={row.missing_vcf_samples}"
         )
 
 
@@ -462,14 +634,19 @@ def run_stage2(
     class_map: Dict[str, List[str]],
     suffix_per_class: Dict[str, str],
     classes: List[str],
+    family_file: Path,
+    family_columns_spec: str,
     batch_size: int = 1000,
     collect: str = "denovo",
     save_all: bool = False,
     use_ext_denovo: bool = False,
     write_hist: bool = True,
+    qmap: bool = False,
     stage1_parameters_path: Path | None = None,
 ) -> Stage2Result:
     collect_denovo, collect_inherited = resolve_collect_flags(collect, save_all)
+    family_columns, family_columns_path = load_family_columns(family_columns_spec, qmap=qmap)
+    trios = load_trios(family_file, family_columns, qmap=qmap)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: List[BatchOutput] = []
@@ -497,6 +674,8 @@ def run_stage2(
         hist_collector = Stage2HistCollector() if write_hist else None
         record_hist_denovo = write_hist and collect == "denovo"
         record_hist_inherited = write_hist and collect == "inherited"
+        missing_trio: List[str] = []
+        missing_vcf_samples: List[str] = []
 
         for batch_index, batch_patient_ids in enumerate(chunked(patient_ids, batch_size), start=1):
             dVars: Dict[str, List[str]] = {}
@@ -505,12 +684,17 @@ def run_stage2(
             batch_patients_nonempty_denovo: set[str] = set()
 
             for patient_id in batch_patient_ids:
+                trio = trios.get(patient_id)
+                if trio is None:
+                    missing_trio.append(patient_id)
+                    continue
                 file_path = build_file_path(input_dir, patient_id, suffix)
                 if not file_path.is_file():
                     continue
-                dvars, dvars_inh = get_vars(
+                dvars, dvars_inh, header_ok = get_vars(
                     file_path,
                     patient_id,
+                    trio,
                     collect_denovo=collect_denovo,
                     collect_inherited=collect_inherited,
                     use_ext_denovo=use_ext_denovo,
@@ -518,6 +702,9 @@ def run_stage2(
                     record_hist_denovo=record_hist_denovo,
                     record_hist_inherited=record_hist_inherited,
                 )
+                if not header_ok:
+                    missing_vcf_samples.append(patient_id)
+                    continue
                 if collect_denovo:
                     merge(dVars, dvars)
                     class_dvars_counts[patient_id] = (
@@ -602,6 +789,17 @@ def run_stage2(
         if hist_collector is not None:
             hist_collector.write_json_files(class_dir, collect=collect)
 
+        if missing_trio:
+            (class_dir / "patients_missing_trio.txt").write_text(
+                "\n".join(sorted(missing_trio)) + "\n",
+                encoding="utf-8",
+            )
+        if missing_vcf_samples:
+            (class_dir / "patients_missing_vcf_samples.txt").write_text(
+                "\n".join(sorted(missing_vcf_samples)) + "\n",
+                encoding="utf-8",
+            )
+
         count_map = class_dvars_counts if collect == "denovo" else class_dvars_inh_counts
         per_patient = [count_map.get(patient_id, 0) for patient_id in patient_ids]
         mean_v, stdev_v = _variants_per_patient_stats(per_patient)
@@ -610,6 +808,8 @@ def run_stage2(
                 class_name=class_name,
                 mean_variants_per_patient=mean_v,
                 stdev_variants_per_patient=stdev_v,
+                missing_trio=len(missing_trio),
+                missing_vcf_samples=len(missing_vcf_samples),
             )
         )
 
@@ -632,6 +832,11 @@ def run_stage2(
                 collect_denovo=collect_denovo,
                 collect_inherited=collect_inherited,
                 suffix_per_class={name: suffix_per_class[name] for name in classes},
+                family_file=family_file,
+                family_columns_path=family_columns_path,
+                family_columns=family_columns,
+                qmap=qmap,
+                trio_count=len(trios),
             ),
             indent=2,
             sort_keys=True,
